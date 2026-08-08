@@ -1,0 +1,13 @@
+需求: 全球大總經與市場情緒轉折監測系統
+目標: Airflow 建置每日 ETL 排程將七大美股總經指標寫入 DuckDB 並畫圖產出 html
+
+REPO:
+Airflow 參照 : C:\Users\BennyXu\Benny_Repo\Repositories\benny-data-pipeline\README.md (可看下 REPO 文檔做初步了解)
+DuckDB 參照 : C:\Users\BennyXu\Benny_Repo\Repositories\benny-data-infra\README.md (可看下 REPO 文檔做初步了解)
+Dashboard 參照 : C:\Users\BennyXu\Benny_Repo\Repositories\Yahoo_fantasy_dashboard (監控系統需仿照此 REPO 開發在 C:\Users\BennyXu\Benny_Repo\Repositories\benny-stock-dashboard)
+
+
+DAG 參照 : C:\Users\BennyXu\Benny_Repo\Repositories\benny-data-pipeline\dags\fantasy_daily_etl\fantasy_daily_etl.py 
+流程想仿照這支DAG，DuckDB 寫完資料後再 callYahoo_fantasy_dashboard\scripts\build_dashboard.py 重產 aggregate data html，推上 github 再用 github page 看
+
+指標資訊跟資料來源參照 : C:\Users\BennyXu\Benny_Repo\Repositories\benny-stock-dashboard\market_indicators_dashboard_architecture.pdf
