@@ -98,9 +98,9 @@ dashboard html、推上 GitHub Pages。
      `silver_us_stock`），而且 layer 3 目前還沒設計，先塞進 silver 有「之後
      發現塞錯要遷移」的風險。**電手建議：layer 3 現在乾脆不開 schema，
      等真的要做的時候再決定要不要自己一個 schema。**
-   - **懸而未決，Benny 說「明天回答」**：`raw_tw_stock`/`raw_us_stock` 這種按
-     國家拆 schema 的方式到底要不要留？還是改成 `raw_stock`/`silver_stock`
-     一張表用 `market` 欄位區分？
+   - **已解決（2026-08-09）**：改成 `raw_stock`/`silver_stock` 一張表用
+     `market` 欄位（'TW'/'US'）區分，不按國家拆 schema。Layer 3（gold）
+     維持「現在不開」，等真的動工再決定。
 
 8. **GitHub repo 建立——方案已提出，等 Benny 拍板 public/private，2026-08-09 回答**：
    - 現況查證：`gh auth status` 正常（Benny0624 帳號，有 `repo` 權限）。
@@ -114,21 +114,42 @@ dashboard html、推上 GitHub Pages。
      2. `gh repo create Benny0624/benny-stock-dashboard --public --source=. --push`。
      3. 開一個 issue，SOP 內容包含：申請 FRED API key 的步驟連結、確認
         repo/Pages 設定完成的檢查清單。
-   - **懸而未決**：Benny 要 public（跟 fantasy dashboard 一樣，Pages 免費方案
-     要求）還是 private（那樣 GitHub Pages 要 Pro 方案才能用）？
+   - **已解決（2026-08-09）**：**Public**——之後會分享 dashboard 連結給其他人
+     看，private 會讓其他人看不到 Pages，跟 fantasy dashboard 先例一致。
+   - **已執行（2026-08-09）**：
+     - `git init` + commit 現有 pdf/txt/筆記
+     - `gh repo create Benny0624/benny-stock-dashboard --public --source=. --push`
+       建好並推上去了：https://github.com/Benny0624/benny-stock-dashboard
+     - 開了 SOP issue：https://github.com/Benny0624/benny-stock-dashboard/issues/1
+       （內容：申請 FRED API key 的步驟、GitHub Pages 設定檢查清單）——
+       **待 Benny 自己去完成，完成後在 issue 底下回報**。
+
+9. **交易日曆判斷（2026-08-09 拍板）**：Benny 同意要做。設計：用
+   `pandas_market_calendars` 套件，美股/FRED DAG 查 `NYSE` 日曆（SIFMA 債券
+   市場日曆假日差異只有 Columbus Day/Veterans Day 這種冷門日子，不用抠這麼
+   細，NYSE 夠用），台股 DAG 查 `XTAI`（台灣證交所）日曆。抓資料前先問日曆
+   「今天是不是預期交易日」——不是就跳過、不產生紅字警示；是的話才去比對
+   「有沒有抓到新的一列」，沒有才真的標紅。**待辦**：`pandas_market_calendars`
+   要加進 `benny-data-pipeline` 的 `pyproject.toml` dependencies。
+
+10. **Nasdaq 獨立 trigger（2026-08-09 拍板）**：不用另外設計，**只做 PDF
+    裡已經列出來的 trigger events**（殖利率倒掛、VIX、S&P 500 均線、SOX
+    輪動、羅素 2000、道瓊 vs 那指），Nasdaq 只在道瓊/那指比值裡當分母出現，
+    不需要自己獨立的轉折條件。
 
 ## 還沒問 / 下次繼續電的方向
 
-- **決定 7（schema 分法）：Benny 明天要回答，按國家拆 schema 還是用
-  `market` 欄位合併？**
-- **決定 8（repo public/private）：Benny 明天要回答，確認後就會執行
-  git init + `gh repo create` + push + 開 issue。**
-- FRED API key 有沒有申請好（issue 開出去之後這是 Benny 自己要去做的事，
-  但要追蹤有沒有完成，會卡住本地測試）。
-- 交易日曆判斷邏輯要不要做（見決定 5 未拍板部分，Benny 只說「好」但沒明確
-  接受要不要做休市偵測，只確認了 html 要標示 updated_at）。
-- 8 個指標的轉折點 trigger 邏輯目前只有部分寫在 PDF 裡（殖利率倒掛、VIX、
-  S&P 500 均線、SOX 輪動、羅素 2000、道瓊 vs 那指），Nasdaq 本身有沒有獨立
-  trigger 條件、還是只出現在道瓊/那指比值裡，沒問過。
-- Layer 2（silver）的實際欄位設計（`fact_indicators`/`dim_triggers` 的 column
-  schema）還沒討論，等決定 7 的 schema 分法定案後才能往下設計。
+決定 1-10 全部拍板（見上方）。repo 已建好、SOP issue 已開（#1）。剩下：
+
+- **卡進度的 blocker**：Benny 要去完成 issue #1 裡的兩件事——申請 FRED API
+  key、確認 GitHub Pages 設定——完成前沒辦法真的動手寫 DAG/測試。
+- `raw_stock`/`silver_stock` 的實際欄位設計（column schema）還沒討論，
+  現在 schema 分法（用 `market` 欄位區分台美股）定案了，可以開始設計了。
+- `pandas_market_calendars` 加進 `benny-data-pipeline/pyproject.toml` 的
+  dependencies（決定 9 的待辦）。
+- DAG 檔案結構還沒定：兩個 DAG（美股/台股）要各自開
+  `dags/us_market_daily_etl/`、`dags/tw_market_daily_etl/` 資料夾（照
+  `fantasy_daily_etl/` 的模式），細節（task 拆分、pool 設定避免 DuckDB
+  lock 衝突）還沒設計。
+- Backfill 的一次性腳本要放在哪裡執行、用什麼身份跑（本機手動跑一次？
+  還是包成 Airflow 的一個一次性 DAG run？）沒討論過。
