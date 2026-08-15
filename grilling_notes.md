@@ -137,19 +137,161 @@ dashboard html、推上 GitHub Pages。
     輪動、羅素 2000、道瓊 vs 那指），Nasdaq 只在道瓊/那指比值裡當分母出現，
     不需要自己獨立的轉折條件。
 
-## 還沒問 / 下次繼續電的方向
+11. **Issue #1 blocker 完成狀況（2026-08-11 查核）**：
+    - Benny 在 issue #1 回覆「finished」並關閉，但電手實際查證 **GitHub Pages
+      當時根本沒開**（`repos/.../pages` API 回 404），跟「finished」對不上。
+    - 追問後 Benny 確認：**FRED_API_KEY 已寫進本機 `.env`**（查證有值）；
+      **GitHub Pages 這次也真的設好了**（Benny 在本輪回覆「1. Done」）。
+    - `GITHUB_PAT` 查證結果：`.env.example` 註解原本寫「只給
+      `Yahoo_fantasy_dashboard` 這個 repo」，但**實測（用 API 查
+      `permissions.push`）這把 fine-grained PAT 其實兩個 repo 都有 push
+      權限**，註解過時，已修正成反映實際範圍。
+    - 順手清掉 `.env` 裡重複的 `GITHUB_PAT=`（一行空、一行有值，dotenv 對
+      同 key 重複行為因工具而異，怕踩雷）。
+    - `.env.example` 補上 `FRED_API_KEY=` 占位符（原本漏了）。
+    - `pyproject.toml` 加了 `pandas-market-calendars`（決定 9 待辦）、
+      **另外主動加了 `yfinance`、`fredapi`**（DAG 要抓資料必須要有，原本
+      完全不在依賴清單裡）——**待辦：Benny 要重新 `make build`**（WSL2 裡跑）。
 
-決定 1-10 全部拍板（見上方）。repo 已建好、SOP issue 已開（#1）。剩下：
+12. **Layer 1-2 schema 草稿 review——4 個問題，2026-08-12 全部拍板**：
+    - **A. `raw_stock.updated_at` 是交易日期，一天一筆（已解決）**：電手
+      查證 FRED API 的 `frequency` 參數最細只到 `d`(daily)，DGS10/DGS2/
+      T10Y2Y 本身就是財政部每日發布一次的序列，物理上沒有 intraday；
+      yfinance 雖然支援到 `1h`，但 intraday 回溯限制很嚴（`1h` 只能拿最近
+      ~730 天，`1m` 只能拿 7 天），且跟「一天跑一次 08:00 cron」的排程、
+      MA50/MA200 的「50/200 個交易日」慣例語義都對不上。**最終定案**：
+      `updated_at` 欄位型別從 `TIMESTAMP` 改成 `DATE`（沒有時分秒意義了，
+      避免時區問題），`processed_at` 維持 `TIMESTAMP`（Airflow 實際執行
+      時間，需要精確到秒）。
+    - **B. 跨指標比值當「合成指標」處理（已解決，Benny 同意）**：SOX/SPX、
+      DJIA/Nasdaq 這種比值給自己的 index_id（例如 9=SOX/SPX、10=DJIA/
+      Nasdaq），算完跟真實指標一樣存進 `silver_stock`。10Y-2Y 利差不用算，
+      直接用 FRED 現成的 `T10Y2Y` 序列。
+    - **C. index_id 映射表（已解決，Benny 同意）**：寫進獨立的 constants
+      檔集中管理（路徑待實際寫 code 時定，例如
+      `dags/stock_dashboard_etl/constants/index_map.py`），不開 DuckDB
+      `dim_index` 表。**這個 map 會用在 4 個地方**：① fetch task 依
+      `source`(FRED/yfinance)、`market`(tw/us) 分流打 API；② 寫入
+      `raw_stock` 時把 `index_name` denormalize 進資料列；③ layer 2 算
+      合成指標（決定 B）時，需要另一個小 dict 記錄「合成 ID 由哪兩個真實
+      ID 組成」，跟 ticker map 放一起管理；④ backfill script 同 ①。
+      **不需要放的地方**：dashboard（`benny-stock-dashboard` repo）不用
+      import 這份常數，因為 `index_name` 已經 denormalize 進每一列，
+      dashboard 直接讀 DuckDB 欄位就有名稱，不用跨 repo 依賴 Python 常數。
+    - **D. JSON schema 檔案的用途（已解決，Benny 同意）**：走方案 (1)——
+      電手直接照這三份 json 手寫對應的
+      `benny-data-infra/sql/stock_dashboard/init_schema.sql`，不另外寫
+      script 自動產生 DDL（照 fantasy 先例，`init_schema.sql` 本來就是
+      手寫 SQL）。
 
-- **卡進度的 blocker**：Benny 要去完成 issue #1 裡的兩件事——申請 FRED API
-  key、確認 GitHub Pages 設定——完成前沒辦法真的動手寫 DAG/測試。
-- `raw_stock`/`silver_stock` 的實際欄位設計（column schema）還沒討論，
-  現在 schema 分法（用 `market` 欄位區分台美股）定案了，可以開始設計了。
-- `pandas_market_calendars` 加進 `benny-data-pipeline/pyproject.toml` 的
-  dependencies（決定 9 的待辦）。
-- DAG 檔案結構還沒定：兩個 DAG（美股/台股）要各自開
-  `dags/us_market_daily_etl/`、`dags/tw_market_daily_etl/` 資料夾（照
-  `fantasy_daily_etl/` 的模式），細節（task 拆分、pool 設定避免 DuckDB
-  lock 衝突）還沒設計。
-- Backfill 的一次性腳本要放在哪裡執行、用什麼身份跑（本機手動跑一次？
-  還是包成 Airflow 的一個一次性 DAG run？）沒討論過。
+13. **DAG 資料夾結構（已解決，2026-08-12）**：確認 Benny 已建的單一
+    `dags/stock_dashboard_etl/` package 底下會定義**兩個獨立 `DAG(...)`
+    物件**（`us_market_daily_etl`、`tw_market_daily_etl`，dag_id 各自
+    獨立、排程時間不同，對應決定 4/8 的「兩個獨立 DAG」），共用同一份
+    `schemas/`/`templates`/`constants` 等程式碼，不是像 fantasy 那樣
+    「一個資料夾一個 DAG」。
+
+14. **Backfill 腳本的職責範圍（已解決，2026-08-12）**：backfill **只負責
+    灌 `raw_stock`/`silver_stock`**，不負責 push html——跟 daily DAG 的
+    `update_dashboard` task 職責分開，不重複邏輯。html 產生+推送**只由
+    daily DAG 觸發**（第一次要看到成果，手動觸發一次 daily DAG 即可）。
+
+15. **Dashboard html 資料窗口（已解決，2026-08-12）**：討論過程中電手一開始
+    把「windows 模式」講成「可以避免抓全部資料」，Benny 指出這站不住腳——
+    下拉選單只要包含最長的選項，html 就必須內嵌那個選項的全部資料，
+    「windows vs 全取」本質是同一件事。真正的問題是「最長的選項該设多長」：
+    - **DB 層（`raw_stock`/`silver_stock`）不設 retention，資料永久保留、
+      無限增長**——layer 3 回測需要長歷史，不能因為 dashboard 好看就砍。
+    - **Dashboard build script 查詢時設 2 年上限**（跟 backfill 的 2 年
+      horizon 對齊），下拉選單 `3mo/6mo/1yr/2yr`（拿掉 `all`，`2yr` 就是
+      上限，DB 資料以後超過 2 年也不會讓頁面無限變大）。
+    - 需要回溯 2 年以前的冷資料，Benny 會自己進 DB 查，不需要 dashboard
+      support。
+
+## 目前 grilling 進度估計（2026-08-12，電手自估，非精確科學）
+
+- **架構/需求對齊層面：約 95%，可以視為問完了**。schema 欄位、型別、
+  合成指標處理、index 映射管理方式、DDL 產出方式、DAG 拆分、backfill
+  職責邊界、dashboard 資料窗口全部拍板，沒有已知的懸而未決項目。
+- **實際可動工開發的程度：仍然是 0——目前為止一行實作代码都還沒寫**，
+  但**設計面已經清楚到可以直接動手**，不會再被「還沒想清楚」卡住。剩下
+  唯一沒設計過的是**「8 個指標的轉折點 trigger 邏輯要怎麼翻譯成實際
+  SQL」**（均線金叉死叉、RSI 閾值穿越、Ratio 52 週新高/破底、月線 MACD
+  轉向）——這塊還沒討論過，且比 MA/RSI 這種「純聚合」複雜，因為「金叉/
+  死叉/首度解倒掛」這類 trigger 定義的是**狀態轉換的瞬間**（今天穿越、
+  昨天沒穿越），不是單純算個數值，SQL 需要用 `LAG()` 之類的視窗函數比較
+  「今天 vs 昨天」的狀態，不能簡單複製 MA 的寫法。
+
+## 下一步（2026-08-12 起，分階段動工）
+
+Benny 同意「先做骨架、trigger 邏輯之後再細化」的分階段方式：
+1. ~~寫 `benny-data-infra/sql/stock_dashboard/init_schema.sql`~~ **已完成
+   （2026-08-12）**。
+2. ~~寫 `dags/stock_dashboard_etl/constants/` 的 index 映射常數檔~~ **已完成
+   （2026-08-13）**。
+3. 仿 `fantasy_daily_etl` 設計兩個 DAG（`us_market_daily_etl`/
+   `tw_market_daily_etl`）的 task 拆分、`pool` 設定。**下一步，還沒開始。**
+4. Backfill script（`benny-data-pipeline/dags/scripts/` 底下）。
+5. Trigger SQL 邏輯（`LAG()` 視窗函數處理狀態轉換）——留到骨架跑通之後
+   再細化，是目前唯一還沒設計過的大塊。
+
+### Step 1 完成細節：`benny-data-infra/sql/stock_dashboard/init_schema.sql`
+
+三張表：`stock_dashboard.raw_stock`（layer 1）、`stock_dashboard.silver_stock`
+（layer 2，MA/RSI/合成指標比值）、`stock_dashboard.dim_triggers`（layer 2，
+轉折點事件）。跟 Benny 原本的 json 草稿比，電手做了幾個修正（已跟 Benny
+說明，未被推翻）：
+- `index_value`/`agg_value`/`trigger_value`：草稿是 `FLOAT`（單精度），改成
+  `DOUBLE`——均線/比值這種連續計算的欄位怕單精度浮點誤差累積。
+- `updated_at`/`agg_type`/`trigger_type`：草稿是 `nullable: true`，改成
+  `NOT NULL`——這三個都在 PK/unique index 裡，邏輯上不該允許 null。
+- `dim_triggers` 表名採複數（草稿檔名跟內部 `tableName` 不一致，一個複數
+  一個單數，統一成複數）。
+- Schema 名稱定為 `stock_dashboard`（對齊資料夾名 `sql/stock_dashboard/`，
+  跟 fantasy 的 `fantasy` schema 同一個慣例）。
+
+### Step 2 完成細節：`dags/stock_dashboard_etl/constants/index_map.py`
+
+過程中 Benny 電手兩題，都已修正：
+
+- **DGS2 vs T10Y2Y 的取捨（2026-08-13 拍板）**：電手原本誤把兩者當互斥
+  選項，只留 T10Y2Y。Benny 指出 DGS10 直覺上該對應 DGS2（兩者都是「殖利率
+  水準值」，適合一起畫殖利率曲線），T10Y2Y 是 FRED 自己算好的「利差」，
+  性質不同。**最終定案：DGS10、DGS2、T10Y2Y 三個都抓**——DGS2 服務「顯示
+  殖利率水準」，T10Y2Y 服務「倒掛/解倒掛 trigger 判斷」，用途不同，FRED
+  免費、多抓一個序列成本趨近於零。三者算同一個「殖利率/利差」指標概念
+  底下的子序列，不算破壞「8 大指標」的範圍界定。
+- **`RATIO_COMPONENTS`/`RATIO_NAMES` 沒有比照 `IndexDef` dataclass 化
+  （2026-08-13 拍板）**：Benny 抓到這個不一致，電手承認純粹是沒想清楚，
+  已修正——把合成指標也統一進同一個 `IndexDef`/`INDEX_MAP`，新增
+  `ticker`/`source`/`components` 三個 optional 欄位（真實指標填
+  `ticker`+`source`，合成指標填 `components`=(分子 id, 分母 id)），用
+  `is_synthetic` property 區分兩種，不用再多維護 `RATIO_COMPONENTS`/
+  `RATIO_NAMES` 兩個獨立字典。提供 `real_indices_for()`（fetch/backfill
+  用）、`synthetic_indices_for()`（layer 2 算比值用）兩個 helper。
+- **常數放哪（2026-08-13 確認，維持電手原本的放法）**：Benny 問是否該照
+  Airflow 慣例放 `dags/config/`。電手說明這個 repo 的 `config/` 是
+  `airflow.cfg override`（基礎設施層級），跟 DAG 業務邏輯常數性質不同；
+  repo 現有慣例是 DAG 專屬程式碼放自己資料夾底下（`fantasy_daily_etl/
+  etl/`），只有真的跨 DAG 共用才升到頂層 `etl/`。`index_map.py` 目前只有
+  `stock_dashboard_etl` 會用，**維持放在 `dags/stock_dashboard_etl/
+  constants/`**，不開新的頂層 `dags/config/`。
+
+最終 `INDEX_MAP` 內容（`index_id` 1-11 為真實指標，101+ 為合成指標）：
+
+| id | 指標 | market | source | ticker |
+|---|---|---|---|---|
+| 1 | 10年期美債殖利率 | us | fred | DGS10 |
+| 2 | 2年期美債殖利率 | us | fred | DGS2 |
+| 3 | 10Y-2Y 殖利率利差 | us | fred | T10Y2Y |
+| 4 | VIX 恐慌指數 | us | yfinance | ^VIX |
+| 5 | S&P 500 指數 | us | yfinance | ^GSPC |
+| 6 | Nasdaq 指數 | us | yfinance | ^IXIC |
+| 7 | 費城半導體指數 | us | yfinance | ^SOX |
+| 8 | 道瓊工業指數 | us | yfinance | ^DJI |
+| 9 | 羅素 2000 指數 | us | yfinance | ^RUT |
+| 10 | 台股加權指數 | tw | yfinance | ^TWII |
+| 11 | 台積電 | tw | yfinance | 2330.TW |
+| 101 | SOX/SPX Ratio | us | (合成) | components=(7,5) |
+| 102 | 道瓊/那指 Ratio | us | (合成) | components=(8,6) |
+
