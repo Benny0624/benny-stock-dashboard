@@ -11,6 +11,7 @@ DuckDB，算衍生指標與轉折點 flag，仿照 `fantasy_daily_etl` 的模式
 dashboard html、推上 GitHub Pages。
 
 參照 repo：
+
 - Airflow：`benny-data-pipeline`（DAG 模式仿照 `dags/fantasy_daily_etl/fantasy_daily_etl.py`）
 - DuckDB：`benny-data-infra`（新專案 schema 要開在 `sql/<project>/`）
 - Dashboard 產出方式：仿照 `Yahoo_fantasy_dashboard/scripts/build_dashboard.py`
@@ -174,7 +175,10 @@ dashboard html、推上 GitHub Pages。
       `source`(FRED/yfinance)、`market`(tw/us) 分流打 API；② 寫入
       `raw_stock` 時把 `index_name` denormalize 進資料列；③ layer 2 算
       合成指標（決定 B）時，需要另一個小 dict 記錄「合成 ID 由哪兩個真實
-      ID 組成」，跟 ticker map 放一起管理；④ backfill script 同 ①。
+      ID 組成」，跟 ticker map 放一起管理；④ backfill script 同 ①；
+      ⑤（2026-08-16 補）`ratio_sql_params(market)`——把 ③ 的合成指標定義轉成
+      `compute_silver_ratios.sql` 的 Jinja context，daily DAG 跟 backfill
+      script 共用，detail 見下方「Step 3/4 完成後的一個修正」。
       **不需要放的地方**：dashboard（`benny-stock-dashboard` repo）不用
       import 這份常數，因為 `index_name` 已經 denormalize 進每一列，
       dashboard 直接讀 DuckDB 欄位就有名稱，不用跨 repo 依賴 Python 常數。
@@ -225,15 +229,24 @@ dashboard html、推上 GitHub Pages。
 ## 下一步（2026-08-12 起，分階段動工）
 
 Benny 同意「先做骨架、trigger 邏輯之後再細化」的分階段方式：
+
 1. ~~寫 `benny-data-infra/sql/stock_dashboard/init_schema.sql`~~ **已完成
    （2026-08-12）**。
 2. ~~寫 `dags/stock_dashboard_etl/constants/` 的 index 映射常數檔~~ **已完成
    （2026-08-13）**。
-3. 仿 `fantasy_daily_etl` 設計兩個 DAG（`us_market_daily_etl`/
-   `tw_market_daily_etl`）的 task 拆分、`pool` 設定。**下一步，還沒開始。**
-4. Backfill script（`benny-data-pipeline/dags/scripts/` 底下）。
+3. ~~仿 `fantasy_daily_etl` 設計兩個 DAG（`us_market_daily_etl`/
+   `tw_market_daily_etl`）的 task 拆分、`pool` 設定~~ **已完成，2026-08-16
+   查核 codebase 確認**：`stock_dashboard_etl.py` 兩個 DAG 都建好，
+   task chain `fetch_raw → load_raw → [compute_ma_rsi, compute_ratios] →
+update_dashboard`，寫入 task 都掛 `pool="duckdb_writer"`（跟
+   `fantasy_daily_etl` 共用同一個 pool，`local/airflow.docker-compose.yaml`
+   有建）。
+4. ~~Backfill script（`benny-data-pipeline/dags/scripts/` 底下）~~
+   **已完成，2026-08-16 查核 codebase 確認**：`backfill_stock_dashboard.py`
+   只灌 `raw_stock`/`silver_stock`（兩年），不碰 dashboard html，符合
+   決定 14。
 5. Trigger SQL 邏輯（`LAG()` 視窗函數處理狀態轉換）——留到骨架跑通之後
-   再細化，是目前唯一還沒設計過的大塊。
+   再細化，是目前唯一還沒設計過的大塊，**下一步**。
 
 ### Step 1 完成細節：`benny-data-infra/sql/stock_dashboard/init_schema.sql`
 
@@ -241,6 +254,7 @@ Benny 同意「先做骨架、trigger 邏輯之後再細化」的分階段方式
 （layer 2，MA/RSI/合成指標比值）、`stock_dashboard.dim_triggers`（layer 2，
 轉折點事件）。跟 Benny 原本的 json 草稿比，電手做了幾個修正（已跟 Benny
 說明，未被推翻）：
+
 - `index_value`/`agg_value`/`trigger_value`：草稿是 `FLOAT`（單精度），改成
   `DOUBLE`——均線/比值這種連續計算的欄位怕單精度浮點誤差累積。
 - `updated_at`/`agg_type`/`trigger_type`：草稿是 `nullable: true`，改成
@@ -273,25 +287,180 @@ Benny 同意「先做骨架、trigger 邏輯之後再細化」的分階段方式
   Airflow 慣例放 `dags/config/`。電手說明這個 repo 的 `config/` 是
   `airflow.cfg override`（基礎設施層級），跟 DAG 業務邏輯常數性質不同；
   repo 現有慣例是 DAG 專屬程式碼放自己資料夾底下（`fantasy_daily_etl/
-  etl/`），只有真的跨 DAG 共用才升到頂層 `etl/`。`index_map.py` 目前只有
+etl/`），只有真的跨 DAG 共用才升到頂層 `etl/`。`index_map.py` 目前只有
   `stock_dashboard_etl` 會用，**維持放在 `dags/stock_dashboard_etl/
-  constants/`**，不開新的頂層 `dags/config/`。
+constants/`**，不開新的頂層 `dags/config/`。
 
 最終 `INDEX_MAP` 內容（`index_id` 1-11 為真實指標，101+ 為合成指標）：
 
-| id | 指標 | market | source | ticker |
-|---|---|---|---|---|
-| 1 | 10年期美債殖利率 | us | fred | DGS10 |
-| 2 | 2年期美債殖利率 | us | fred | DGS2 |
-| 3 | 10Y-2Y 殖利率利差 | us | fred | T10Y2Y |
-| 4 | VIX 恐慌指數 | us | yfinance | ^VIX |
-| 5 | S&P 500 指數 | us | yfinance | ^GSPC |
-| 6 | Nasdaq 指數 | us | yfinance | ^IXIC |
-| 7 | 費城半導體指數 | us | yfinance | ^SOX |
-| 8 | 道瓊工業指數 | us | yfinance | ^DJI |
-| 9 | 羅素 2000 指數 | us | yfinance | ^RUT |
-| 10 | 台股加權指數 | tw | yfinance | ^TWII |
-| 11 | 台積電 | tw | yfinance | 2330.TW |
-| 101 | SOX/SPX Ratio | us | (合成) | components=(7,5) |
-| 102 | 道瓊/那指 Ratio | us | (合成) | components=(8,6) |
+| id  | 指標              | market | source   | ticker           |
+| --- | ----------------- | ------ | -------- | ---------------- |
+| 1   | 10年期美債殖利率  | us     | fred     | DGS10            |
+| 2   | 2年期美債殖利率   | us     | fred     | DGS2             |
+| 3   | 10Y-2Y 殖利率利差 | us     | fred     | T10Y2Y           |
+| 4   | VIX 恐慌指數      | us     | yfinance | ^VIX             |
+| 5   | S&P 500 指數      | us     | yfinance | ^GSPC            |
+| 6   | Nasdaq 指數       | us     | yfinance | ^IXIC            |
+| 7   | 費城半導體指數    | us     | yfinance | ^SOX             |
+| 8   | 道瓊工業指數      | us     | yfinance | ^DJI             |
+| 9   | 羅素 2000 指數    | us     | yfinance | ^RUT             |
+| 10  | 台股加權指數      | tw     | yfinance | ^TWII            |
+| 11  | 台積電            | tw     | yfinance | 2330.TW          |
+| 101 | SOX/SPX Ratio     | us     | (合成)   | components=(7,5) |
+| 102 | 道瓊/那指 Ratio   | us     | (合成)   | components=(8,6) |
 
+## Step 3/4 完成後查核出的一個修正（2026-08-16）
+
+電手 double check codebase 時發現：`templates/compute_silver_ratios.sql`
+的 `ratio_defs`（`VALUES (101, 'SOX/SPX Ratio', 7, 5), ...`）是**手寫死在
+SQL 裡**，跟 `constants/index_map.py` 的 `INDEX_MAP`（`components=(7, 5)`
+等）是兩份獨立文字，中間沒有任何同步機制——SQL 檔頭註解還提醒「要跟
+`RATIO_COMPONENTS` 保持同步」，但那個字典在 Step 2（決定 12-C）已經被砍掉
+併進 `IndexDef.components` 了，註解也沒跟著更新。風險：以後新增合成指標
+只改 `index_map.py`、忘記同步改這份 SQL，會靜默漏算，`silver_stock` 查不到
+新比值也不會報錯。
+
+**已修正**：讓 SQL 端直接吃 `index_map.py` 動態產生，不再手寫。
+
+- `constants/index_map.py` 新增 `ratio_sql_params(market)`：包一層
+  `synthetic_indices_for()`，轉成 SQL 端要的欄位形狀
+  （`ratio_id`/`ratio_name`/`numerator_id`/`denominator_id`）。
+- `templates/compute_silver_ratios.sql` 的 `ratio_defs` 改成
+  `{% for r in params.ratios %}` 迴圈產生 `VALUES`，外層包
+  `{% if params.ratios %}`——某個 market 沒有合成指標時（目前的 `tw`）
+  `params.ratios` 是空 list，整段 SQL no-op，不會產生語法錯誤。
+- `stock_dashboard_etl.py`（`compute_ratios` task）跟
+  `backfill_stock_dashboard.py`（`_render_sql`）都改成呼叫同一個
+  `ratio_sql_params()`，不各自維護一份轉換邏輯。
+- 驗證：三個 Python 檔 `ast.parse` 語法檢查過；Jinja 實際 render 過
+  US market（兩筆合成指標，VALUES 逗號分隔正確）跟 TW market（空 list，
+  只剩註解、無殘留語法）兩種情境。
+
+`INDEX_MAP` 現在是唯一事實來源，新增合成指標只要改一個地方
+（`index_map.py`），`compute_silver_ratios.sql` 自動跟上，不用再手動同步
+兩份定義。相關程式碼說明同步更新到
+`benny-data-pipeline/dags/stock_dashboard_etl/stock_dashboard_etl.md`。
+
+## `update_dashboard_fn` 順序（2026-08-16 拍板）：先做完 Step 5 再寫
+
+`update_dashboard_fn`/`build_dashboard.py` 留到 Step 5（trigger SQL）做完、
+`dim_triggers` 有真的資料之後再一次寫完整版，不先出閹割版。
+
+## Step 5（trigger SQL）待回答問題（2026-08-16，對照 PDF 原始定義查出的坑）
+
+`market_indicators_dashboard_architecture.pdf` 第 1-2 頁「核心轉折點與量化
+條件」表格逐條核對，發現好幾條 PDF 寫的「量化觸發條件」本身就不夠精確、
+無法直接轉成 SQL，需要 Benny 先回答：
+
+1. **VIX 恐慌閾值，30 還是 35？** PDF 原文寫「VIX > 30 或 35」，兩個數字
+   都出現，沒有明確選一個。
+   -> 以 30 作為預設恐慌觸發門檻（市場標準），並將 35 定義為「極度恐慌（Extreme Fear）」。
+2. **哪些 trigger 是「狀態轉換瞬間」、哪些是「持續性閾值」？** 金叉死叉、
+   倒掛解倒掛、SMA 突破是「今天穿越、昨天沒穿越」，要 `LAG()` 比對狀態；
+   但 VIX 恐慌/自滿這種，是「條件成立的每一天都算一筆」還是「只在剛進入
+   該狀態的那天算一筆」？兩種寫法完全不同，PDF 沒說清楚。
+   -> dim_triggers 的粒度依然維持 (date, index_id) 每日一筆（便於與行情 Join），但欄位明確拆分：
+   -> State 欄位（每天算）：in_vix_panic (VIX >= 30)
+   -> Transition 欄位（只有跨過那天為 TRUE）： is_vix_panic_entry = (VIX >= 30 and LAG(VIX) < 30), is_vix_panic_exit = (VIX < 30 and LAG(VIX) >= 30)
+3. **SOX/SPX Ratio「創高/破底」要抓多長的滾動窗口？** PDF 寫「52 週」，
+   換算成交易日是 252 天還是直接用 365 曆日？現在 `silver_stock` 完全沒有
+   任何 rolling max/min 的 `agg_type`，這是全新的計算，不是照抄 MA/RSI
+   的寫法能解決的。
+   -> 採用美股標準交易日 252 天，並在 DuckDB 中以 Window Function 計算
+   ```SQL
+   MAX(ratio_value) OVER (
+      PARTITION BY index_id
+      ORDER BY trade_date
+      ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+   ) AS high_252d
+   ```
+4. **月線 MACD 完全沒實作**（SOX 輪動 trigger 的第二個條件）：MACD 需要
+   EMA12/EMA26/訊號線 EMA9，而且「月線」代表要先把 daily 資料 resample
+   成月線收盤價再算 MACD——`compute_silver_indicators.sql` 目前完全沒有
+   涵蓋這塊，EMA 的遞迴特性（今天的 EMA 依賴昨天的 EMA）也沒辦法像 MA
+   一樣用簡單的 `ROWS BETWEEN N PRECEDING` window 函數算，DuckDB 要嘛用
+   遞迴 CTE、要嘛換公式（例如用 SMA 近似），這塊需要另外設計。
+   -> 能寫一個 TASK 拉出來用 PYTHON 算嗎
+5. **Russell 2000/SPX Ratio 根本不在 `INDEX_MAP` 裡**：目前
+   `constants/index_map.py` 只定義了 101（SOX/SPX）、102（DJIA/Nasdaq）
+   兩個合成指標，PDF 的羅素 2000 trigger 需要的 RUT/SPX ratio 完全沒有
+   `index_id`，要先在決定 12-B 的合成指標清單裡加一筆。
+   -> 補上 103: RUT_SPX_RATIO (RUT / GSPC)
+6. **「突破趨勢線」沒有可執行的定義**（羅素 2000 trigger 的一半條件）：
+   PDF 原文「Russell 2000 / SPX Ratio 突破趨勢線或 200SMA」，「趨勢線」
+   是線性迴歸通道、人工畫線、還是別的算法？這種主觀敘述沒辦法直接轉 SQL，
+   要嘛 Benny 給一個具體算法，要嘛只做「或 200SMA」那一半、放棄趨勢線
+   那一半。
+   -> 直接砍掉「趨勢線」，只做「突破 200SMA（200日均線）」
+7. **道瓊/那指 Ratio「顯著上升」沒有量化門檻**：PDF 原文「DJIA / Nasdaq
+   Ratio 顯著上升」，沒給任何數字（不像 VIX 有 30/35/12，也不像倒掛有
+   `<0`/`>0`）。需要 Benny 定義具體閾值，例如「N 個交易日內漲幅超過 X%」
+   或改用「相對 MA50 的乖離率超過 X%」這種可執行的寫法。
+   -> 採用 「20 交易日動量（20D Momentum）突破閥值」 或 「突破 MA60 乖離率」
+   -> $$DJI\_IXIC\_20D\_ROC = \frac{Ratio_t - Ratio_{t-20}}{Ratio_{t-20}} > +3.0\%$$
+   -> 代表在 1 個月內，道瓊跑贏那斯達克超過 3%，明確反映資金逃離高 Beta 轉入防禦型價值股
+8. **合成指標（101/102，之後可能加 103）目前沒有 MA50/MA200**：
+   `compute_silver_indicators.sql` 只吃 `raw_stock`（真實指標），SOX/SPX
+   這種 ratio 的 MA 完全沒算過。SOX 輪動 trigger 如果要用 ratio 的均線，
+   現有管道算不出來，需要另外一段 SQL 對 `silver_stock` 裡
+   `agg_type='RAW'` 的合成指標序列再算一次 MA。
+   -> Phase 1（基礎計算）：raw_stock ➔ 計算個股/指數的 MA、RSI，同時產出 101, 102, 103 的每日收盤 Ratio 寫入 silver_stock。
+   -> Phase 2（衍生指標計算）：以 silver_stock 為來源，對 index_id IN (101, 102, 103) 補算 MA50 與 MA200，更新回 silver_stock。
+9. **`dim_triggers` 的寫入頻率**：像 VIX 持續一整週都 > 30 這種情況，
+   `dim_triggers` 要每天都寫一筆（dashboard 上轉折點標記會連續好幾天都有
+   flag），還是只在「進入」跟「離開」該狀態的那兩天各寫一筆？取決於問題 2
+   的答案，但要明確拍板才能定 SQL 的 `WHERE` 邏輯長什麼樣。
+   -> 同 2. 日曆維度全量記錄 State，欄位內用 LAG() 標記 Event
+   -> State 欄位（每天算）：in_vix_panic (VIX >= 30)
+   -> Transition 欄位（只有跨過那天為 TRUE）： is_vix_panic_entry = (VIX >= 30 and LAG(VIX) < 30), is_vix_panic_exit = (VIX < 30 and LAG(VIX) >= 30)
+
+## 2026-08-17 追問確認：Q2/Q9 EAV vs 寬表、Q4 Python task 可讀性
+
+- **Q2/Q9（`dim_triggers` EAV vs 寬表）已解決：維持 EAV，不改 `init_schema.sql`**。
+  Benny 確認 Q2/Q9 舉例的 `in_vix_panic`/`is_vix_panic_entry`/
+  `is_vix_panic_exit` 只是講解用的欄位名，不是要改表結構——實際存法是
+  `trigger_type='VIX_PANIC_STATE'`/`'VIX_PANIC_ENTRY'`/`'VIX_PANIC_EXIT'`
+  三種不同的 EAV row（STATE 每天寫一筆，ENTRY/EXIT 只在跨越那天寫一筆）。
+  Benny 要看寬表格式的話**自己在 DuckDB 上開一個 `PIVOT` view**，不需要
+  底層表配合改成寬表。Step 1 的 `dim_triggers` DDL 維持不變。
+- **Q4（月線 MACD）已解決：獨立 `PythonOperator` task，寫的時候要求可讀性
+  優先**：確認用 pandas 算 EMA12/EMA26/Signal（DuckDB 沒有原生遞迴函數，
+  硬湊 SQL window function 算 EMA 難讀），但 Benny 要求**計算邏輯本身要
+  寫得可讀性高**——實作時避免一行鏈式塞太多 `.ewm().mean()`，拆成有名字
+  的中間步驟（例如 `monthly_close` → `ema_12` → `ema_26` → `macd_line` →
+  `signal_line` 各自一行、變數名說明用途），不要為了精簡犧牲看懂的速度。
+
+## Step 5 SQL/task 實作完成 + CI/CD 修正 + `build_dashboard.py`（2026-08-19）
+
+- **Step 5 trigger SQL/task 全部寫完並驗證**：`compute_triggers.sql`（殖利率
+  倒掛/VIX 恐慌自滿/SPX 均線穿越金死叉/RUT-SPX 200SMA/DJI-IXIC 20 日 ROC/
+  SOX-SPX 252 日新高破底）、`compute_silver_ratio_ma.sql`（合成指標 MA50/
+  MA200，決定 8 的 Phase 2）、`etl/macd.py` + `compute_sox_macd` task（月線
+  MACD 轉向）。用本地起一顆 in-memory DuckDB、灌合成資料（刻意埋轉折點）
+  跑過全部 SQL + Python 驗證，殖利率/VIX/SPX/ratio 的 ENTER/EXIT/BREAKOUT/
+  CROSS 都精準落在埋的轉折日期上，`market='tw'` 正確 no-op。
+- **`INDEX_MAP` 新增 103（羅素2000/SPX Ratio，components=(9,5)）**，對應
+  Q5 答案，`compute_silver_ratios.sql` 靠既有的動態渲染機制自動吃到，不用
+  改 SQL。
+- **`update_dashboard_fn` 實作完成**：clone `benny-stock-dashboard`、帶
+  `MARKET=us`/`tw` 跑它的 `scripts/build_dashboard.py`、`git add output/`、
+  沒變化就跳過、有變化才 commit + push，模式照抄 `fantasy_daily_etl.py`。
+- **`benny-stock-dashboard/scripts/build_dashboard.py` 寫完**：查 2 年窗口
+  資料，真實指標讀 `raw_stock`、合成指標讀 `silver_stock` 的 `RAW` 列，
+  `dim_triggers` 依自己的 `index_id` 直接分組疊圖（不用額外對照表），事件型
+  trigger 疊 markPoint、`_STATE` 不疊。前端指標下拉 + 時間範圍下拉，RSI/
+  MACD 子圖依資料是否存在自動顯示/隱藏，模式照抄 `Yahoo_fantasy_dashboard`。
+  端到端跑過本地驗證（含 HTML 裡的 JSON payload 正確性檢查）。
+- **CI/CD 修正（Benny 指示）**：
+  1. `benny-data-infra/local/init_db.py` 從「寫死讀一個 `init_schema.sql`」
+     改成掃過 `sql/*/init_schema.sql` 全部執行，`duckdb.docker-compose.yaml`
+     改掛整個 `sql/` 目錄——修好「`stock_dashboard` schema 沒被自動部署
+     執行到」的缺口。
+  2. `benny-data-infra/README.md` 補上「這條 CD 只處理新表，改動既有表的
+     結構要手動進 DuckDB 改」的說明（`CREATE TABLE IF NOT EXISTS` 對已存在
+     的表是 no-op）。
+  3. `benny-data-infra`/`benny-data-pipeline`/`benny-stock-dashboard` 三份
+     README 的架構圖跟 CI/CD 描述對齊、互相 cross-reference；
+     `benny-data-pipeline/README.md` 拿掉「以 `fantasy_daily_etl` 為例」的
+     單一 DAG 走法，改寫成整個 repo 的 general 文件（DAG 清單改表格、
+     `.env`/`make trigger dag=` 改成通用寫法）。
