@@ -1,58 +1,89 @@
 # benny-stock-dashboard
 
 全球大總經與市場情緒轉折監測系統的**最終產出端**：靜態 dashboard html，由
-GitHub Pages 託管。抓資料、算指標、判斷轉折點都不在這個 repo 裡發生——那些
-邏輯在 `benny-data-pipeline` 的 Airflow DAG 裡跑，寫進 `benny-data-infra`
-管理的共用 DuckDB。這個 repo 只負責「查 DuckDB → 產靜態 html → push」，模式
-照抄 `Yahoo_fantasy_dashboard`。
+GitHub Pages 託管。抓資料、算指標、判斷轉折點、跑回測都不在這個 repo 裡
+發生——那些邏輯在 `benny-data-pipeline` 的 Airflow DAG 裡跑，寫進
+`benny-data-infra` 管理的共用 DuckDB。這個 repo 只負責「查 DuckDB → 產靜態
+html → push」，模式照抄 `Yahoo_fantasy_dashboard`。
+
+目前有兩塊：**指標/轉折點 dashboard**（`dashboard_us.html`/
+`dashboard_tw.html`，已完成）跟**Layer 3 回測結果頁面**（規劃見
+`layer3_backtest_proposal.md`，**還沒開始寫**，是目前唯一還沒完成的部分）。
 
 ## 這個 repo 目前放什麼
 
-- `grilling_notes.md`——設計討論全紀錄（拍板的決定、還在追問的坑），是這個
-  專案的**主要參考文件**，這份 README 只整理「現在是什麼狀態、怎麼部署」，
-  設計理由/決策過程一律看 `grilling_notes.md`。
-- `market_indicators_dashboard_architecture.pdf`——原始需求文件（8 大指標
-  定義、轉折點量化條件、架構草圖）。
-- `user_request.txt`——最初的需求描述。
+文件類都放在 `documents/` 底下（跟程式碼分開）：
+
+- `documents/grilling_notes.md`——指標/轉折點 dashboard（Step 1-5）的設計
+  討論全紀錄（拍板的決定、還在追問的坑），是這個專案的**主要參考文件**，
+  這份 README 只整理「現在是什麼狀態、怎麼部署」，設計理由/決策過程一律看
+  `grilling_notes.md`。
+- `documents/layer3_backtest_proposal.md`——Layer 3 回測的規劃草案（哪些
+  trigger 可以當進出場訊號、5 個候選策略、schema 設計、圖表需求），格式跟
+  `grilling_notes.md` 一樣是「列方案 + 待決定問題」的討論記錄，是回測這塊的
+  對應文件。
+- `documents/market_indicators_dashboard_architecture.pdf`——原始需求文件
+  （8 大指標定義、轉折點量化條件、架構草圖）。
+- `documents/user_request.txt`——最初的需求描述。
 - `scripts/build_dashboard.py`——查 DuckDB、產出 `output/dashboard_{market}.html`
   的腳本，`benny-data-pipeline` 的 `update_dashboard` task 會 clone 這個
   repo、帶 `MARKET=us`/`MARKET=tw` 跑這支腳本、commit + push，detail 見下方
-  「`build_dashboard.py` 說明」。
+  「`build_dashboard.py` 說明」。這支只管指標/轉折點頁面，**Layer 3 回測
+  結果的 build script 還沒寫**。
 - `output/dashboard_us.html`、`output/dashboard_tw.html`——由上面那支腳本
   產生，GitHub Pages 直接服務這兩個檔案，本機不用手動放。
+- `.nojekyll`——告訴 GitHub Pages 跳過 Jekyll pipeline，直接當純靜態檔案
+  服務，detail 見下方「CI/CD 流程」。
 
 ## 專案在整體架構裡的位置
 
 ```mermaid
 flowchart LR
     API["FRED API / yfinance"] --> DAG
-    subgraph DAG["benny-data-pipeline<br/>(Airflow, 兩個獨立 DAG：us / tw)"]
+    subgraph DAG["benny-data-pipeline<br/>(Airflow，三個 DAG)"]
         direction TB
-        Fetch["fetch_raw → load_raw"] --> Silver["compute_ma_rsi / compute_ratios<br/>/ compute_ratio_ma / compute_sox_macd"]
+        Fetch["us/tw_market_daily_etl:<br/>fetch_raw → load_raw"] --> Silver["compute_ma_rsi / compute_ratios<br/>/ compute_ratio_ma / compute_sox_macd"]
         Silver --> Triggers["compute_triggers<br/>(殖利率倒掛/VIX/SPX 均線/ratio 突破)"]
         Triggers --> UpdateDash["update_dashboard<br/>(clone + build + commit + push)"]
+        Triggers -.->|"手動觸發<br/>(layer3_backtest_etl，一次性 DAG)"| Backtest["compute_spx_golden_death_cross 等策略 task<br/>(backtest/engine.py 跑 VectorBT)"]
     end
     UpdateDash --> DuckDB[("warehouse.duckdb<br/>schema: stock_dashboard<br/>(benny-data-infra 管理的共用 volume，<br/>build_dashboard.py 用 read_only 連線查)")]
+    Backtest -->|"讀 backtest_universe<br/>寫 backtest_runs/equity_curve/trades/kpis"| DuckDB
     UpdateDash -- "clone repo → 跑 build_dashboard.py<br/>→ git commit + push" --> Build["benny-stock-dashboard<br/>scripts/build_dashboard.py"]
     Build --> Pages["GitHub Pages<br/>dashboard_us.html / dashboard_tw.html"]
+    DuckDB -.->|"規劃中，還沒寫<br/>(layer3_backtest_proposal.md)"| Layer3Page["benny-stock-dashboard<br/>回測結果 build script（未來）"]
+    Layer3Page -.-> Pages
 ```
 
 ## 相關 repo
 
 | repo | 角色 |
 |---|---|
-| `benny-data-infra` | 共用 DuckDB 的 volume 建立 + schema 初始化（`sql/stock_dashboard/init_schema.sql`：`raw_stock`/`silver_stock`/`dim_triggers` 三張表） |
-| `benny-data-pipeline` | Airflow ETL：`us_market_daily_etl`/`tw_market_daily_etl` 兩個 DAG，抓資料、算 MA/RSI/合成指標比值/月線 MACD/轉折點 trigger，全部寫進 DuckDB，最後一個 task 觸發本 repo 的 build script |
+| `benny-data-infra` | 共用 DuckDB 的 volume 建立 + schema 初始化（`sql/stock_dashboard/init_schema.sql`：`raw_stock`/`silver_stock`/`dim_triggers` + Layer 3 的 `backtest_universe`/`backtest_runs`/`backtest_equity_curve`/`backtest_trades`/`backtest_kpis`，共 8 張表） |
+| `benny-data-pipeline` | Airflow ETL：`us_market_daily_etl`/`tw_market_daily_etl`（每天排程，抓資料、算 MA/RSI/合成指標比值/月線 MACD/轉折點 trigger，最後一個 task 觸發本 repo 的 build script）+ `layer3_backtest_etl`（一次性手動觸發，拿轉折點訊號跑 VectorBT 回測），全部寫進同一顆 DuckDB |
 | `benny-stock-dashboard`（本 repo） | 查 DuckDB、產靜態 html、由 GitHub Pages 託管 |
 
-## 目前狀態（詳細記錄見 `grilling_notes.md`）
+## 目前狀態（詳細記錄見 `grilling_notes.md`/`layer3_backtest_proposal.md`）
 
-架構/需求對齊、DDL、DAG 骨架、backfill script、trigger SQL（含月線 MACD）、
-`scripts/build_dashboard.py` 都已完成，並經過本地 DuckDB 合成資料端到端驗證
-（SQL → Python 查詢/reshape → JSON 內嵌 → html render）。整條管線從「抓資料」
-到「產出 dashboard html push 到 GitHub Pages」骨架已經打通。
+**指標/轉折點 dashboard（`grilling_notes.md` Step 1-5）**：架構/需求對齊、
+DDL、DAG 骨架、backfill script、trigger SQL（含月線 MACD）、
+`scripts/build_dashboard.py` 都已完成上線，整條管線從「抓資料」到「產出
+dashboard html push 到 GitHub Pages」已經打通並實際運作中。
+
+**Layer 3 回測（`layer3_backtest_proposal.md`）**：schema（`backtest_universe`
++ 四張回測結果表）、10 年歷史回補腳本、`layer3_backtest_etl` DAG（目前接了
+一個策略：SPX 金叉死叉 sanity check）、VectorBT 轉換邏輯都已完成並經過
+本地端到端驗證。**唯一還沒做的是本 repo 這邊的回測結果 build script**（讀
+`backtest_*` 四張表、畫 Equity Curve/Underwater Chart/月度熱力圖/KPI 表/
+逐筆交易列表/訊號疊價格圖），是目前整個專案唯一還沒完成的部分。
 
 ## `build_dashboard.py` 說明
+
+這支只負責指標/轉折點 dashboard（`raw_stock`/`silver_stock`/
+`dim_triggers`），**不涵蓋 Layer 3 的回測結果**——回測結果要讀的是另外四張
+表（`backtest_runs`/`backtest_equity_curve`/`backtest_trades`/
+`backtest_kpis`），會是一支獨立的 build script，還沒開始寫，見上方「目前
+狀態」。
 
 - **入口參數**：`MARKET` 環境變數（`us`/`tw`，必填），`DUCKDB_PATH`（預設
   `/data/warehouse.duckdb`）。輸出 `output/dashboard_{MARKET}.html`。
