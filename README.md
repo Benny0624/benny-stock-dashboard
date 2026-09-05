@@ -6,9 +6,11 @@ GitHub Pages 託管。抓資料、算指標、判斷轉折點、跑回測都不�
 `benny-data-infra` 管理的共用 DuckDB。這個 repo 只負責「查 DuckDB → 產靜態
 html → push」，模式照抄 `Yahoo_fantasy_dashboard`。
 
-目前有兩塊：**指標/轉折點 dashboard**（`dashboard_us.html`/
-`dashboard_tw.html`，已完成）跟**Layer 3 回測結果頁面**（規劃見
-`layer3_backtest_proposal.md`，**還沒開始寫**，是目前唯一還沒完成的部分）。
+目前有兩塊，**都已完成**：**指標/轉折點 dashboard**（`dashboard_us.html`/
+`dashboard_tw.html`）跟**Layer 3 回測結果頁面**（`backtest_dashboard.html`，
+規劃見 `layer3_backtest_proposal.md`）。下一階段是回頭處理舊 dashboard的
+重新設計（合併 us/tw、多指標疊圖、指標定義說明——見
+`layer3_backtest_proposal.md` 追問三，拍板排在 Layer 3 之後）。
 
 ## 這個 repo 目前放什麼
 
@@ -28,10 +30,16 @@ html → push」，模式照抄 `Yahoo_fantasy_dashboard`。
 - `scripts/build_dashboard.py`——查 DuckDB、產出 `output/dashboard_{market}.html`
   的腳本，`benny-data-pipeline` 的 `update_dashboard` task 會 clone 這個
   repo、帶 `MARKET=us`/`MARKET=tw` 跑這支腳本、commit + push，detail 見下方
-  「`build_dashboard.py` 說明」。這支只管指標/轉折點頁面，**Layer 3 回測
-  結果的 build script 還沒寫**。
-- `output/dashboard_us.html`、`output/dashboard_tw.html`——由上面那支腳本
-  產生，GitHub Pages 直接服務這兩個檔案，本機不用手動放。
+  「`build_dashboard.py` 說明」。這支只管指標/轉折點頁面。
+- `scripts/build_backtest_dashboard.py`——查 DuckDB 的 `backtest_*` 四張表，
+  產出 `output/backtest_dashboard.html`。`benny-data-pipeline` 的
+  `layer3_backtest_etl` DAG 的 `update_backtest_dashboard` task 會 clone
+  這個 repo、跑這支腳本、commit + push，detail 見下方「`build_backtest_
+  dashboard.py` 說明」。不用 `MARKET` 環境變數分流——一份 html 涵蓋所有
+  已經跑過的策略，前端下拉選單切換。
+- `output/dashboard_us.html`、`output/dashboard_tw.html`、
+  `output/backtest_dashboard.html`——由上面兩支腳本產生，GitHub Pages
+  直接服務這三個檔案，本機不用手動放。
 - `.nojekyll`——告訴 GitHub Pages 跳過 Jekyll pipeline，直接當純靜態檔案
   服務，detail 見下方「CI/CD 流程」。
 
@@ -46,13 +54,14 @@ flowchart LR
         Silver --> Triggers["compute_triggers<br/>(殖利率倒掛/VIX/SPX 均線/ratio 突破)"]
         Triggers --> UpdateDash["update_dashboard<br/>(clone + build + commit + push)"]
         Triggers -.->|"手動觸發<br/>(layer3_backtest_etl，一次性 DAG)"| Backtest["compute_spx_golden_death_cross 等策略 task<br/>(backtest/engine.py 跑 VectorBT)"]
+        Backtest --> UpdateBacktestDash["update_backtest_dashboard<br/>(clone + build + commit + push)"]
     end
-    UpdateDash --> DuckDB[("warehouse.duckdb<br/>schema: stock_dashboard<br/>(benny-data-infra 管理的共用 volume，<br/>build_dashboard.py 用 read_only 連線查)")]
+    UpdateDash --> DuckDB[("warehouse.duckdb<br/>schema: stock_dashboard<br/>(benny-data-infra 管理的共用 volume，<br/>build script 都用 read_only 連線查)")]
     Backtest -->|"讀 backtest_universe<br/>寫 backtest_runs/equity_curve/trades/kpis"| DuckDB
     UpdateDash -- "clone repo → 跑 build_dashboard.py<br/>→ git commit + push" --> Build["benny-stock-dashboard<br/>scripts/build_dashboard.py"]
     Build --> Pages["GitHub Pages<br/>dashboard_us.html / dashboard_tw.html"]
-    DuckDB -.->|"規劃中，還沒寫<br/>(layer3_backtest_proposal.md)"| Layer3Page["benny-stock-dashboard<br/>回測結果 build script（未來）"]
-    Layer3Page -.-> Pages
+    UpdateBacktestDash -- "clone repo → 跑 build_backtest_dashboard.py<br/>→ git commit + push" --> Build2["benny-stock-dashboard<br/>scripts/build_backtest_dashboard.py"]
+    Build2 --> Pages2["GitHub Pages<br/>backtest_dashboard.html"]
 ```
 
 ## 相關 repo
@@ -60,7 +69,7 @@ flowchart LR
 | repo | 角色 |
 |---|---|
 | `benny-data-infra` | 共用 DuckDB 的 volume 建立 + schema 初始化（`sql/stock_dashboard/init_schema.sql`：`raw_stock`/`silver_stock`/`dim_triggers` + Layer 3 的 `backtest_universe`/`backtest_runs`/`backtest_equity_curve`/`backtest_trades`/`backtest_kpis`，共 8 張表） |
-| `benny-data-pipeline` | Airflow ETL：`us_market_daily_etl`/`tw_market_daily_etl`（每天排程，抓資料、算 MA/RSI/合成指標比值/月線 MACD/轉折點 trigger，最後一個 task 觸發本 repo 的 build script）+ `layer3_backtest_etl`（一次性手動觸發，拿轉折點訊號跑 VectorBT 回測），全部寫進同一顆 DuckDB |
+| `benny-data-pipeline` | Airflow ETL：`us_market_daily_etl`/`tw_market_daily_etl`（每天排程，抓資料、算 MA/RSI/合成指標比值/月線 MACD/轉折點 trigger，最後一個 task 觸發本 repo 的 `build_dashboard.py`）+ `layer3_backtest_etl`（一次性手動觸發，拿轉折點訊號跑 VectorBT 回測，最後一個 task 觸發本 repo 的 `build_backtest_dashboard.py`），全部寫進同一顆 DuckDB |
 | `benny-stock-dashboard`（本 repo） | 查 DuckDB、產靜態 html、由 GitHub Pages 託管 |
 
 ## 目前狀態（詳細記錄見 `grilling_notes.md`/`layer3_backtest_proposal.md`）
@@ -72,18 +81,20 @@ dashboard html push 到 GitHub Pages」已經打通並實際運作中。
 
 **Layer 3 回測（`layer3_backtest_proposal.md`）**：schema（`backtest_universe`
 + 四張回測結果表）、10 年歷史回補腳本、`layer3_backtest_etl` DAG（目前接了
-一個策略：SPX 金叉死叉 sanity check）、VectorBT 轉換邏輯都已完成並經過
-本地端到端驗證。**唯一還沒做的是本 repo 這邊的回測結果 build script**（讀
-`backtest_*` 四張表、畫 Equity Curve/Underwater Chart/月度熱力圖/KPI 表/
-逐筆交易列表/訊號疊價格圖），是目前整個專案唯一還沒完成的部分。
+一個策略：SPX 金叉死叉 sanity check）、VectorBT 轉換邏輯、
+`scripts/build_backtest_dashboard.py` 都已完成，並經過本地端到端驗證
+（合成資料跑過整條「訊號 → VectorBT → 寫 DB → 查詢 → JSON → html」的鏈路，
+也已經對真實回補的 10 年資料實際跑過一次 DAG）。**目前只有一個策略**（方案
+四 sanity check），`layer3_backtest_proposal.md` 列的方案三/一/二/五還沒
+接上，是下一步；再之後才是回頭處理舊 dashboard 的重新設計（追問三，拍板
+排在 Layer 3 之後）。
 
 ## `build_dashboard.py` 說明
 
 這支只負責指標/轉折點 dashboard（`raw_stock`/`silver_stock`/
-`dim_triggers`），**不涵蓋 Layer 3 的回測結果**——回測結果要讀的是另外四張
-表（`backtest_runs`/`backtest_equity_curve`/`backtest_trades`/
-`backtest_kpis`），會是一支獨立的 build script，還沒開始寫，見上方「目前
-狀態」。
+`dim_triggers`），**不涵蓋 Layer 3 的回測結果**——回測結果讀的是另外四張
+表，由獨立的 `scripts/build_backtest_dashboard.py` 負責，見下方它自己的
+說明章節。
 
 - **入口參數**：`MARKET` 環境變數（`us`/`tw`，必填），`DUCKDB_PATH`（預設
   `/data/warehouse.duckdb`）。輸出 `output/dashboard_{MARKET}.html`。
@@ -113,6 +124,42 @@ dashboard html push 到 GitHub Pages」已經打通並實際運作中。
   現況即可。
 - **模式**：整體結構（ECharts 5 CDN、深色主題 CSS 變數、資料內嵌不用後端）
   照抄 `Yahoo_fantasy_dashboard/scripts/build_dashboard.py`。
+
+## `build_backtest_dashboard.py` 說明
+
+- **入口參數**：只有 `DUCKDB_PATH`（預設 `/data/warehouse.duckdb`），**沒有
+  `MARKET`**——回測結果按 `(strategy_name, ticker)` 分，不是按 market 分，
+  一份 `output/backtest_dashboard.html` 涵蓋所有已經跑過的策略，用前端
+  下拉選單切換，不像指標 dashboard 要美股/台股各出一份。
+- **月度報酬熱力圖是這支腳本自己算的，DB 沒有存**：`backtest_equity_curve`
+  只存每日累積淨值，月度報酬（月底淨值 / 上月底淨值 - 1）是查詢時在
+  Python 這邊算出來的衍生數字，沒有必要為此多開一張表跟每日序列重複存兩份
+  資料，算法見 `compute_monthly_returns()`。年度報酬目前**沒有**另外算
+  （原本規劃要的是「月度/年度熱力圖」，先只做月度，年度是月度的簡單延伸，
+  之後真的要看再加）。
+- **訊號疊價格圖需要一份手動同步的對照表**：跟指標 dashboard 不同，
+  `dim_triggers` 沒有直接告訴你「這個策略的訊號是哪個 trigger_type」——
+  這個對應關係只存在 `benny-data-pipeline` 的 `backtest/strategies.py`
+  裡，兩個 repo 沒有共用 Python 套件機制（跟決定 12-C `index_name`
+  denormalize 的理由一樣），所以這支腳本自己維護一份小對照表
+  `STRATEGY_SIGNAL_MAP`（`strategy_name` → 訊號的 `market`/`index_id`/
+  `entry_trigger`/`exit_trigger`）。**新增策略時容易漏掉的一步**：
+  `benny-data-pipeline` 那邊加了新策略，這裡的 `STRATEGY_SIGNAL_MAP`
+  也要手動補一筆，不補的話那個策略的 KPI/Equity Curve/交易列表都正常
+  顯示，只是「訊號疊價格圖」找不到對照、安靜地不疊出任何標記，不會報錯，
+  容易被忽略。
+- **訊號疊在哪張圖上**：疊在「交易標的的價格走勢」（`backtest_universe`）
+  上，不是疊在「訊號來源指標」（例如 SPX 本身）上——因為使用者關心的是
+  「這個訊號觸發時，我實際交易的東西發生了什麼事」，不是訊號指標自己的
+  走勢（雖然目前唯一的策略訊號來源跟交易標的高度相關，SPX 訊號、SPY
+  交易，兩者走勢幾乎一樣，這個區別暫時看不太出來，之後方案五 SOX MACD
+  訊號、交易 2330.TW 這種訊號跟標的不同源的策略，這個設計就會顯現出來）。
+- **零交易/資料不足的邊界情況**：`backtest_kpis` 的比率型欄位（Sharpe/
+  Sortino/Calmar/勝率/Profit Factor）可能是 `NULL`，前端一律顯示成
+  `—`，不會出現 `NaN`/`undefined` 這種難看的字樣；月度熱力圖資料不滿一個
+  月時顯示提示文字而不是空白圖表。
+- **模式**：整體結構（ECharts 5 CDN、深色主題 CSS 變數）跟
+  `build_dashboard.py` 一致，維持整個 repo 視覺風格統一。
 
 ## CI/CD 流程
 
