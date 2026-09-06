@@ -337,7 +337,7 @@ HTML_TEMPLATE = """<!doctype html>
 
 <div class="panel">
   <h2>Equity Curve（策略 vs 基準累積淨值）</h2>
-  <div class="hint">三角形標記進出場訊號發生的日期</div>
+  <div class="hint">三角形標記進出場訊號發生的日期。下方可拖拉/滾輪縮放看任意區間</div>
   <div id="equity-chart" class="chart"></div>
 </div>
 
@@ -354,7 +354,7 @@ HTML_TEMPLATE = """<!doctype html>
 
 <div class="panel">
   <h2>交易標的價格 + 訊號標記</h2>
-  <div class="hint">訊號跟交易標的可能不是同一檔（例如訊號算在指數上、交易 ETF），見 tooltip 確認訊號實際來源</div>
+  <div class="hint">訊號跟交易標的可能不是同一檔（例如訊號算在指數上、交易 ETF），見 tooltip 確認訊號實際來源。下方可拖拉/滾輪縮放看任意區間</div>
   <div id="price-chart" class="chart"></div>
 </div>
 
@@ -380,6 +380,13 @@ const ACCENT = "#3987e5";
 const GOOD = "#0ca30c";
 const CRITICAL = "#e66767";
 const MUTED = "#898781";
+
+// 自由縮放/平移用（跟 build_dashboard.py 同一套做法）：純前端功能，資料
+// 已經整包內嵌在 html 裡，dataZoom 讓使用者自己框選任意區間看細節。
+const DATA_ZOOM = [
+  { type: "inside" },
+  { type: "slider", height: 16, bottom: 6, borderColor: "#383835", fillerColor: "rgba(57,135,229,0.15)", handleStyle: { color: "#3987e5" }, textStyle: { color: "#898781", fontSize: 10 } },
+];
 
 const strategySelect = document.getElementById("strategy-select");
 const kpiRow = document.getElementById("kpi-row");
@@ -461,7 +468,8 @@ function renderEquityChart() {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
     legend: { top: 0, textStyle: { color: "#c3c2b7", fontSize: 12 } },
-    grid: { containLabel: true, top: 40, bottom: 30, left: 10, right: 30 },
+    grid: { containLabel: true, top: 40, bottom: 50, left: 10, right: 30 },
+    dataZoom: DATA_ZOOM,
     xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
     yAxis: { type: "value", scale: true, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
     series: [
@@ -479,7 +487,8 @@ function renderDrawdownChart() {
   drawdownChart.setOption({
     backgroundColor: "transparent",
     tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
-    grid: { containLabel: true, top: 20, bottom: 30, left: 10, right: 30 },
+    grid: { containLabel: true, top: 20, bottom: 50, left: 10, right: 30 },
+    dataZoom: DATA_ZOOM,
     xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
     yAxis: { type: "value", max: 0, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
     series: [{
@@ -538,7 +547,8 @@ function renderPriceChart() {
   priceChart.setOption({
     backgroundColor: "transparent",
     tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
-    grid: { containLabel: true, top: 20, bottom: 30, left: 10, right: 30 },
+    grid: { containLabel: true, top: 20, bottom: 50, left: 10, right: 30 },
+    dataZoom: DATA_ZOOM,
     xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
     yAxis: { type: "value", scale: true, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
     series: [{
