@@ -83,13 +83,14 @@ glossary、交易日曆判斷（`pandas_market_calendars`，取代舊版「永�
 判斷」的紅字）。
 
 **Layer 3 回測（`layer3_backtest_proposal.md`）**：schema（`backtest_universe`
-+ 四張回測結果表）、10 年歷史回補腳本、`layer3_backtest_etl` DAG（目前接了
-一個策略：SPX 金叉死叉 sanity check）、VectorBT 轉換邏輯、
-`scripts/build_backtest_dashboard.py` 都已完成，並經過本地端到端驗證
-（合成資料跑過整條「訊號 → VectorBT → 寫 DB → 查詢 → JSON → html」的鏈路，
-也已經對真實回補的 10 年資料實際跑過一次 DAG）。**目前只有一個策略**（方案
-四 sanity check），`layer3_backtest_proposal.md` 列的方案三/一/二/五還沒
-接上，是下一步。
++ 四張回測結果表）、10 年歷史回補腳本、`layer3_backtest_etl` DAG、VectorBT
+轉換邏輯、`scripts/build_backtest_dashboard.py` 都已完成。**2026-09-06 接上
+方案三/一/五**（方案四 sanity check 原本就有），目前 6 組策略/標的組合都已
+用真實 10 年資料跑過：`spx_golden_death_cross`（SPY）、
+`sox_spx_ratio_rotation`（2330.TW/006208.TW，各自獨立結果）、
+`extreme_fear_dip_buy_60d`/`_120d`（SPY）、`sox_macd_rotation`（SOXX）。
+**方案二（倒掛解開避險）還沒做**——規劃只定義了進場條件，出場/再進場條件
+還沒拍板，見 `layer3_backtest_proposal.md` 第 11 節。
 
 ## `build_dashboard.py` 說明
 

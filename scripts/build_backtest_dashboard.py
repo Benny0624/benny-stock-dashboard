@@ -48,6 +48,25 @@ STRATEGY_SIGNAL_MAP = {
         "entry_trigger": "SPX_GOLDEN_CROSS",
         "exit_trigger": "SPX_DEATH_CROSS",
     },
+    "sox_spx_ratio_rotation": {
+        "market": "us",
+        "index_id": 101,
+        "entry_trigger": "SOX_SPX_RATIO_NEW_HIGH_252D",
+        "exit_trigger": "SOX_SPX_RATIO_NEW_LOW_252D",
+    },
+    "sox_macd_rotation": {
+        "market": "us",
+        "index_id": 7,
+        "entry_trigger": "SOX_MACD_BULLISH_CROSS",
+        "exit_trigger": "SOX_MACD_BEARISH_CROSS",
+    },
+    # extreme_fear_dip_buy_60d/_120d（方案一）故意不補進這份對照：進場是
+    # VIX_EXTREME_FEAR_ENTER 疊加「同一天 SOX RSI14 < 30」的複合條件，出場
+    # 是固定持有期，不是任何 trigger_type——這份對照表只吃「單一 entry
+    # trigger + 單一 exit trigger」的形狀，硬塞 VIX_EXTREME_FEAR_ENTER 進來
+    # 會讓疊圖顯示「每次極度恐慌都進場」，但實際上還有 RSI 條件篩掉一些，
+    # 顯示會失真，不如照上面 fetch_strategy_signal_events() 的既有機制
+    # 回傳空列表（KPI/Equity Curve/交易列表照常顯示，只是不疊訊號點）。
 }
 
 
@@ -65,22 +84,32 @@ def fetch_runs(conn: duckdb.DuckDBPyConnection) -> list[dict]:
     ]
 
 
+def _run_key(strategy_name: str, ticker: str) -> str:
+    """`(strategy_name, ticker)` 是 backtest_* 表的真正 key（決定見追問一），
+    同一個 strategy_name 可以對到多個 ticker（例如方案三同時跑 2330.TW/
+    006208.TW）——純用 strategy_name 當 dict key 會讓後面跑的 ticker
+    覆蓋掉前面的，這裡統一組成複合 key 避免這個問題。"""
+    return f"{strategy_name}::{ticker}"
+
+
 def fetch_kpis(conn: duckdb.DuckDBPyConnection) -> dict[str, dict]:
     cols = [d[0] for d in conn.execute(
         "SELECT * FROM stock_dashboard.backtest_kpis LIMIT 0"
     ).description]
+    ticker_idx = cols.index("ticker")
+    strategy_idx = cols.index("strategy_name")
     rows = conn.execute("SELECT * FROM stock_dashboard.backtest_kpis").fetchall()
-    return {row[0]: dict(zip(cols, row)) for row in rows}
+    return {_run_key(row[strategy_idx], row[ticker_idx]): dict(zip(cols, row)) for row in rows}
 
 
 def fetch_equity_curves(conn: duckdb.DuckDBPyConnection) -> dict[str, list[list]]:
     rows = conn.execute(
-        "SELECT strategy_name, updated_at, strategy_value, benchmark_value, drawdown_pct "
-        "FROM stock_dashboard.backtest_equity_curve ORDER BY strategy_name, updated_at"
+        "SELECT strategy_name, ticker, updated_at, strategy_value, benchmark_value, drawdown_pct "
+        "FROM stock_dashboard.backtest_equity_curve ORDER BY strategy_name, ticker, updated_at"
     ).fetchall()
     curves: dict[str, list[list]] = defaultdict(list)
-    for strategy_name, updated_at, strategy_value, benchmark_value, drawdown_pct in rows:
-        curves[strategy_name].append([
+    for strategy_name, ticker, updated_at, strategy_value, benchmark_value, drawdown_pct in rows:
+        curves[_run_key(strategy_name, ticker)].append([
             updated_at.isoformat(), strategy_value, benchmark_value, drawdown_pct
         ])
     return curves
@@ -88,13 +117,13 @@ def fetch_equity_curves(conn: duckdb.DuckDBPyConnection) -> dict[str, list[list]
 
 def fetch_trades(conn: duckdb.DuckDBPyConnection) -> dict[str, list[dict]]:
     rows = conn.execute(
-        "SELECT strategy_name, trade_seq, entry_date, exit_date, entry_price, "
+        "SELECT strategy_name, ticker, trade_seq, entry_date, exit_date, entry_price, "
         "exit_price, return_pct, holding_days "
-        "FROM stock_dashboard.backtest_trades ORDER BY strategy_name, trade_seq"
+        "FROM stock_dashboard.backtest_trades ORDER BY strategy_name, ticker, trade_seq"
     ).fetchall()
     trades: dict[str, list[dict]] = defaultdict(list)
-    for strategy_name, seq, entry_date, exit_date, entry_price, exit_price, return_pct, holding_days in rows:
-        trades[strategy_name].append({
+    for strategy_name, ticker, seq, entry_date, exit_date, entry_price, exit_price, return_pct, holding_days in rows:
+        trades[_run_key(strategy_name, ticker)].append({
             "trade_seq": seq,
             "entry_date": entry_date.isoformat(),
             "exit_date": exit_date.isoformat() if exit_date else None,
@@ -179,17 +208,20 @@ def build_strategies_payload(conn: duckdb.DuckDBPyConnection) -> dict:
     strategies = {}
     for run in runs:
         name = run["strategy_name"]
-        equity_curve = equity_curves.get(name, [])
-        strategies[name] = {
-            "ticker": run["ticker"],
+        ticker = run["ticker"]
+        key = _run_key(name, ticker)
+        equity_curve = equity_curves.get(key, [])
+        strategies[key] = {
+            "strategy_name": name,
+            "ticker": ticker,
             "benchmark_ticker": run["benchmark_ticker"],
             "start_date": run["start_date"],
             "end_date": run["end_date"],
-            "kpis": kpis.get(name, {}),
+            "kpis": kpis.get(key, {}),
             "equity_curve": equity_curve,
             "monthly_returns": compute_monthly_returns(equity_curve),
-            "trades": trades.get(name, []),
-            "price": fetch_price_series(conn, run["ticker"]),
+            "trades": trades.get(key, []),
+            "price": fetch_price_series(conn, ticker),
             "signals": fetch_signal_events(conn, name),
         }
     return strategies
@@ -341,11 +373,11 @@ const priceChart = echarts.init(document.getElementById("price-chart"));
 
 function populateStrategyOptions() {
   strategySelect.innerHTML = "";
-  for (const name of Object.keys(STRATEGIES)) {
-    const info = STRATEGIES[name];
+  for (const key of Object.keys(STRATEGIES)) {
+    const info = STRATEGIES[key];
     const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = `${name}（${info.ticker}）`;
+    opt.value = key;
+    opt.textContent = `${info.strategy_name}（${info.ticker}）`;
     strategySelect.appendChild(opt);
   }
 }

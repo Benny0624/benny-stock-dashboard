@@ -666,6 +666,63 @@ backlog，這輪不做**——multi-select 疊圖引擎重寫完、版面穩定�
 
 已用真實 DuckDB 資料（10 年歷史）實際跑過 `build_dashboard.py`、在瀏覽器
 打開驗證過（多選比較、glossary、狀態列、STATE 底色都正常），程式碼跟
-`benny-data-pipeline`/`benny-data-infra` 的 README 都同步更新。**還沒做**：
-第 4 項手機排版（backlog）；`output/dashboard.html` 的程式碼改動還沒
-commit/push 到 GitHub（本機驗證過，push 前想再讓你看一眼再動手）。
+`benny-data-pipeline`/`benny-data-infra` 的 README 都同步更新。已 commit +
+push（`864b32a`），另外補了一個「本圖轉折點說明」面板（`TRIGGER_GLOSSARY`，
+commit `0f08eb4`）——走勢圖下方列出目前畫面上出現的每個 trigger 代碼跟一句
+白話解釋，回應「trigger 是啥看不懂」的追問。
+
+## 11. 2026-09-06 方案三/一/五接上，方案二暫緩
+
+`benny-data-pipeline/dags/stock_dashboard_etl/`：
+
+- **`constants/backtest_tickers.py`** 補上 `2330.TW`、`006208.TW`（方案三）、
+  `SOXX`（方案五），`SPY`（方案一/四共用）已經有。
+- **`backtest/strategies.py`** 新增三個策略函式：
+  - `sox_spx_ratio_rotation(conn, ticker)`（方案三）：進場
+    `SOX_SPX_RATIO_NEW_HIGH_252D`、出場 `SOX_SPX_RATIO_NEW_LOW_252D`，
+    ticker 參數化，同一策略對 `2330.TW`/`006208.TW` 各跑一次。
+  - `extreme_fear_dip_buy(conn, holding_days)`（方案一）：進場
+    `VIX_EXTREME_FEAR_ENTER` 疊加「同日 SOX RSI14 < 30」（新增
+    `_load_indicator_series()` helper 讀 `silver_stock` 連續數值），固定
+    持有期出場（新增 `_fixed_holding_exits()` helper），60d/120d 兩個都跑
+    （追問一拍板的「參數編進 strategy_name」做法）。
+  - `sox_macd_rotation(conn)`（方案五）：進場 `SOX_MACD_BULLISH_CROSS`、
+    出場 `SOX_MACD_BEARISH_CROSS`，交易標的 SOXX。
+- `layer3_backtest_etl.py` 加 5 個新 task（`functools.partial` 綁定
+  ticker/holding_days 參數），全部接到 `update_backtest_dashboard` 前面。
+
+**方案二（倒掛解開避險）沒有實作**：規劃只定義了「減碼」進場條件
+（`YIELD_INVERSION_EXIT` 且倒掛維持 100 個交易日以上且 SPX 跌破 MA50），
+**沒有定義出場/再進場條件**——`vbt.Portfolio.from_signals` 需要成對的
+entries/exits，這個缺口需要你先決定怎麼定義出場才能寫，先跳過不猜。
+
+**實測跑過真實 10 年資料**（手動觸發 `layer3_backtest_etl`，`pool=
+duckdb_writer` 序列跑完 6 個策略 task）：
+
+| 策略 | 標的 | 交易次數 | 總報酬 | Sharpe | 勝率 |
+|---|---|---|---|---|---|
+| `spx_golden_death_cross` | SPY | 6 | 147.30% | 0.83 | 83.3% |
+| `sox_spx_ratio_rotation` | 2330.TW | 4 | 1214.63% | 1.56 | 100% |
+| `sox_spx_ratio_rotation` | 006208.TW | 4 | 623.66% | 1.58 | 100% |
+| `extreme_fear_dip_buy_60d` | SPY | 5 | 95.95% | 0.81 | 80% |
+| `extreme_fear_dip_buy_120d` | SPY | 5 | 183.90% | 1.12 | 100% |
+| `sox_macd_rotation` | SOXX | 6 | 710.95% | 1.06 | 66.7% |
+
+`sox_spx_ratio_rotation` 兩檔標的報酬看起來很驚人，但要注意這 10 年剛好
+是半導體/AI 主題股的超級大多頭，`SOX_SPX_RATIO_NEW_HIGH_252D` 這個訊號
+2 年內就發生 55 次、10 年會更多，樣本雖然比其他策略多，但訊號本身在這段
+期間幾乎「常態性觸發」，報酬數字很大一部分是「這段時間本來就該漲」，不是
+訊號本身多神——**解讀時務必對照同期 buy & hold 的基準線（Equity Curve
+灰色虛線）**，不要只看策略報酬本身。
+
+**踩到一個真的 bug，已修正**：`build_backtest_dashboard.py` 原本所有查詢
+（`fetch_kpis`/`fetch_equity_curves`/`fetch_trades`）跟前端下拉選單都只用
+`strategy_name` 當 key——方案三讓同一個 `strategy_name`
+（`sox_spx_ratio_rotation`）對到兩個不同 `ticker`，實測發現兩組結果會
+互相覆蓋、下拉選單也看不出兩個選項的差異。已改成 `(strategy_name,
+ticker)` 複合 key（新增 `_run_key()` helper），重新產出後兩個 ticker 各自
+正確顯示（2330.TW 1214.63%、006208.TW 623.66%，跟 DB 查詢結果一致）。
+`build_backtest_dashboard.py` 的 `STRATEGY_SIGNAL_MAP` 也補上
+`sox_spx_ratio_rotation`/`sox_macd_rotation` 的訊號對照（`extreme_fear_
+dip_buy_*` 故意不補，理由見程式碼註解——複合進場條件 + 固定持有期出場，
+硬塞單一 trigger 對照會讓疊圖顯示失真）。
