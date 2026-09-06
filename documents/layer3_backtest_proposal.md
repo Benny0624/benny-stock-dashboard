@@ -726,3 +726,12 @@ ticker)` 複合 key（新增 `_run_key()` helper），重新產出後兩個 tick
 `sox_spx_ratio_rotation`/`sox_macd_rotation` 的訊號對照（`extreme_fear_
 dip_buy_*` 故意不補，理由見程式碼註解——複合進場條件 + 固定持有期出場，
 硬塞單一 trigger 對照會讓疊圖顯示失真）。
+
+## 12. 2026-09-06 手機版面（跟 build_dashboard.py 同一套做法）
+
+`build_backtest_dashboard.py` 補上 `<meta name="viewport">` +
+`@media (max-width: 640px)`：filter 直式排列、KPI 卡片改兩欄、圖表變矮、
+逐筆交易列表加 `white-space: nowrap` + 橫向捲動（表格欄位多，硬擠會被
+壓爛，不如讓使用者自己左右滑）。跟指標 dashboard 那邊一樣，這次瀏覽器
+自動化環境沒辦法真的縮小 viewport 驗證，只確認媒體查詢引用的 class 都對得
+到頁面真實元素。
