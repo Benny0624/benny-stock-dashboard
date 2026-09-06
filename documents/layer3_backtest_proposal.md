@@ -573,7 +573,10 @@ KPI 彙總表、逐筆交易列表、訊號疊價格圖），砍掉樣本數標�
   `db_writer.py`）、`constants/backtest_tickers.py`（目前只有 SPY）、
   `dags/scripts/backfill_backtest_universe.py`、`layer3_backtest_etl` DAG
   （`compute_spx_golden_death_cross` → `update_backtest_dashboard`）全部
-  寫完，**在 `feature/layer3-backtest` 分支，還沒 merge 進 `master`**。
+  寫完。**更正（2026-09-06）**：之前這裡寫「還沒 merge master」是錯的——
+  查證後 PR #9 其實 2026-09-05 就 merge 了（本機當時對到沒 fetch 的舊
+  `master` 分支，資訊過期）。2026-09-06 的 `MARKET` 拿掉改動另開 PR #10，
+  等 Benny merge。
 - **`benny-stock-dashboard`**：`scripts/build_backtest_dashboard.py` 已完成
   並在 `main`（commit `04fcca1`），第 8 節定案的 6 項圖表全做。
 - **實際手動觸發過一次 `layer3_backtest_etl`（2026-09-05）**：
