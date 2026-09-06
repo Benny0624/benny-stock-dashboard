@@ -28,6 +28,21 @@
   `updated_at` 比較，只有「今天該有新資料但沒有」才標紅，休市日不會誤報
   （grilling_notes.md 決定 9，取代原本「永遠顯示但不判斷」的作法）。
 
+2026-09-06 第二輪追加（grilling_notes.md「續補」，Benny 拍板三項都動工）：
+- **比較模式的 hint 文字加一句座標軸說明**：Y 軸是所有選取指標共用的線性
+  軸，波動幅度最大的那條線（例如 VIX 危機時衝到 300+）會把軸的範圍撐開、
+  其他線相對被壓扁——正規化多線比較的固有取捨，先用文字說明，沒有做
+  log scale/雙軸（拍板先只加文字）。
+- **走勢/RSI/MACD 圖都加 ECharts `dataZoom`**（slider + 滾輪/拖拉）：純
+  前端功能，不用改資料查詢——2 年資料整包內嵌在 html 裡，`dataZoom` 讓
+  使用者在已載入範圍內自由框選任意區間（例如「兩年前開始的 3 個月」），
+  跟 `window-select` 互補（`window-select` 決定內嵌多少資料，`dataZoom`
+  決定在那份資料裡怎麼看）。
+- **手機版面**：加 `<meta name="viewport">` + `@media (max-width: 640px)`
+  響應式 CSS——filter 面板/checklist 改直式排列、KPI 卡片改兩欄、圖表高度
+  縮小、字級/padding 收斂，純粹是版面在小螢幕不跑版，不是另外做一套精簡
+  文字摘要式的「閱讀模式」。
+
 指標分兩種，資料形狀不完全一樣：
 - 真實指標（index_id 1-11）：原始數值在 raw_stock，MA50/MA200/RSI14 在
   silver_stock。SOX（index_id=7）額外有 MACD/MACD_SIGNAL（月頻率，只有這一個
@@ -330,6 +345,7 @@ HTML_TEMPLATE = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>市場轉折監測 Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
@@ -406,6 +422,26 @@ HTML_TEMPLATE = """<!doctype html>
   #trigger-legend .trigger-item { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; line-height: 1.5; }
   #trigger-legend .trigger-item .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
   #trigger-legend .trigger-item code { color: var(--text-primary); font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; margin-right: 6px; }
+
+  @media (max-width: 640px) {
+    body { padding: 12px; }
+    h1 { font-size: 17px; }
+    .subtitle { font-size: 12px; }
+    #filters { flex-direction: column; gap: 14px; padding: 12px 14px; }
+    .filter-block { width: 100%; }
+    .checklist { min-width: 0; width: 100%; max-height: 160px; }
+    select { min-width: 0; width: 100%; }
+    .status-row { gap: 8px; }
+    .status-pill { font-size: 12px; }
+    .kpi-row { gap: 8px; }
+    .kpi-card { min-width: calc(50% - 4px); padding: 10px 12px; }
+    .kpi-card .kpi-value { font-size: 19px; }
+    .panel { padding: 12px 14px; margin-bottom: 16px; }
+    .chart { height: 300px; }
+    .chart.short { height: 170px; }
+    .glossary-item { font-size: 12px; }
+    #trigger-legend .trigger-item { font-size: 11px; }
+  }
 </style>
 </head>
 <body>
@@ -471,6 +507,14 @@ const GOOD = "#0ca30c";
 const CRITICAL = "#e66767";
 const MUTED = "#898781";
 const PALETTE = ["#3987e5", "#e6a83f", "#0ca30c", "#e66767", "#b98ae6", "#4fc3c3", "#e677b0", "#a3c93f"];
+
+// 自由縮放/平移用（grilling_notes.md「續補」第 2 點）：純前端功能，2 年
+// 資料已經整包內嵌在 html 裡，dataZoom 讓使用者在這份資料裡自由框選任意
+// 區間，不用重新查詢 DB，也不用自己刻日期輸入框。
+const DATA_ZOOM = [
+  { type: "inside" },
+  { type: "slider", height: 16, bottom: 6, borderColor: "#383835", fillerColor: "rgba(57,135,229,0.15)", handleStyle: { color: "#3987e5" }, textStyle: { color: "#898781", fontSize: 10 } },
+];
 
 // trigger_type 尾巴代表方向：ENTER/BREAKOUT/GOLDEN_CROSS/NEW_HIGH... 是「進入/
 // 達成」用向上三角，EXIT/BREAKDOWN/DEATH_CROSS/NEW_LOW... 是「離開」用向下
@@ -710,7 +754,7 @@ function renderLevelChart(ids) {
   if (ids.length === 1) {
     const info = indicesInfo[0];
     levelTitle.textContent = info.index_name + (info.is_synthetic ? "（比值）走勢" : " 走勢");
-    levelHint.textContent = "實線：價格/比值；虛線：MA50、MA200。三角形=進入/突破/黃金交叉/創新高，倒三角=離開/跌破/死亡交叉/破新低。底色區塊=持續性狀態（見圖上 tooltip）";
+    levelHint.textContent = "實線：價格/比值；虛線：MA50、MA200。三角形=進入/突破/黃金交叉/創新高，倒三角=離開/跌破/死亡交叉/破新低。底色區塊=持續性狀態（見圖上 tooltip）。下方可拖拉/滾輪縮放看任意區間";
 
     const level = filterByWindow(info.level);
     const ma50 = filterByWindow(info.ma50);
@@ -722,7 +766,8 @@ function renderLevelChart(ids) {
       backgroundColor: "transparent",
       tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
       legend: { top: 0, textStyle: { color: "#c3c2b7", fontSize: 12 } },
-      grid: { containLabel: true, top: 40, bottom: 40, left: 10, right: 30 },
+      grid: { containLabel: true, top: 40, bottom: 60, left: 10, right: 30 },
+      dataZoom: DATA_ZOOM,
       xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
       yAxis: { type: "value", scale: true, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
       series: [
@@ -737,7 +782,7 @@ function renderLevelChart(ids) {
   }
 
   levelTitle.textContent = "多指標比較（指數化，窗口起點 = 100）";
-  levelHint.textContent = "每條線以目前窗口的起點重新指數化成 100，方便跨量級（利率/指數/股價）比較走勢；垂直虛線=各指標的事件型轉折點；底色區塊=持續性狀態";
+  levelHint.textContent = "每條線以目前窗口的起點重新指數化成 100，方便跨量級（利率/指數/股價）比較走勢；垂直虛線=各指標的事件型轉折點；底色區塊=持續性狀態。Y 軸線性共用，波動幅度最大的指標（例如 VIX 危機時衝到 300+）會撐開軸的範圍、讓其他線相對被壓扁，不是誰的原始數值比較大。下方可拖拉/滾輪縮放看任意區間";
 
   const markLines = toMarkLines(indicesInfo);
   const markAreas = toMarkAreas(indicesInfo);
@@ -754,7 +799,8 @@ function renderLevelChart(ids) {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
     legend: { top: 0, textStyle: { color: "#c3c2b7", fontSize: 12 }, type: "scroll" },
-    grid: { containLabel: true, top: 40, bottom: 40, left: 10, right: 30 },
+    grid: { containLabel: true, top: 40, bottom: 60, left: 10, right: 30 },
+    dataZoom: DATA_ZOOM,
     xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
     yAxis: { type: "value", scale: true, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
     series,
@@ -775,7 +821,8 @@ function renderRsiChart(ids) {
   rsiChart.setOption({
     backgroundColor: "transparent",
     tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
-    grid: { containLabel: true, top: 20, bottom: 30, left: 10, right: 30 },
+    grid: { containLabel: true, top: 20, bottom: 50, left: 10, right: 30 },
+    dataZoom: DATA_ZOOM,
     xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
     yAxis: { type: "value", min: 0, max: 100, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
     series: [{
@@ -807,7 +854,8 @@ function renderMacdChart(ids) {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis", backgroundColor: "#1a1a19", borderColor: "#383835", textStyle: { color: "#fff" } },
     legend: { top: 0, textStyle: { color: "#c3c2b7", fontSize: 12 } },
-    grid: { containLabel: true, top: 30, bottom: 30, left: 10, right: 30 },
+    grid: { containLabel: true, top: 30, bottom: 50, left: 10, right: 30 },
+    dataZoom: DATA_ZOOM,
     xAxis: { type: "time", axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: { show: false } },
     yAxis: { type: "value", scale: true, axisLabel: AXIS_LABEL_STYLE, axisLine: AXIS_LINE_STYLE, splitLine: SPLIT_LINE_STYLE },
     series: [

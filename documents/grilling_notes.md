@@ -517,4 +517,31 @@ detail 見 `layer3_backtest_proposal.md` 第 10 節。
    目前列 backlog，不搶當前 Layer 3 開發時間。
 
 **待你回覆**：第 1 點要不要現在就加 log scale/雙軸，還是先只加文字說明？
-第 2 點 `dataZoom` 現在動工嗎？
+第 2 點 `dataZoom` 現在動工嗎？ 
+-> 第 1 點 先只加文字說明
+-> 第 2 點 `dataZoom` 現在動工
+-> 手機閱讀模式 可以 動工了
+
+### 電手完成回報（2026-09-06）
+
+三項都做完，都在 `benny-stock-dashboard/scripts/build_dashboard.py`：
+
+1. **座標軸文字說明**：比較模式的 hint 文字補了一句「Y 軸線性共用，波動
+   幅度最大的指標會撐開軸的範圍、讓其他線相對被壓扁，不是誰的原始數值
+   比較大」，沒有動 log scale/雙軸。
+2. **`dataZoom`**：走勢/RSI/MACD 三張圖都加了（`{type:"inside"}` 滑鼠
+   滾輪/拖拉 + `{type:"slider"}` 底部拖拉條），純前端，2 年資料本來就整包
+   在 html 裡，不用重查 DB。已在瀏覽器實測看得到拖拉條、能局部縮放。
+3. **手機版面**：加了 `<meta name="viewport">` + `@media (max-width:
+   640px)`——filter 面板/checklist 改直式、KPI 卡片改兩欄、圖表變矮、
+   字級/padding 收斂。**誠實說明一個驗證限制**：這次瀏覽器自動化環境的
+   `resize_window` 沒有真的改變頁面可見區域（`window.innerWidth` 測試後
+   還是停在桌面解析度），沒辦法在這個環境裡截圖驗證窄螢幕的實際畫面，
+   只確認了媒體查詢裡引用的所有 CSS class/id 都對得到頁面上真實存在的
+   元素（沒有選錯名字打錯字），語法本身也是標準 CSS。**建議你自己在手機
+   或瀏覽器開發者工具的裝置模擬器上開一次 dashboard.html 目視確認**，
+   如果排版有問題告訴我，我再調整。
+
+已重新產出 `output/dashboard.html`（用真實 DB 資料），程式碼 + 產出檔跟這份
+筆記一起 commit/push。
+-> 順便問個，我 line bot 想抓 layer 3 的 進出場訊號，是不是一定得上 aws 然後開 api 給 linebot 打了
