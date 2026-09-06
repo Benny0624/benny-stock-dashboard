@@ -464,3 +464,18 @@ SQL 裡**，跟 `constants/index_map.py` 的 `INDEX_MAP`（`components=(7, 5)`
      `benny-data-pipeline/README.md` 拿掉「以 `fantasy_daily_etl` 為例」的
      單一 DAG 走法，改寫成整個 repo 的 general 文件（DAG 清單改表格、
      `.env`/`make trigger dag=` 改成通用寫法）。
+
+## 2026-09-05 進度更新：Layer 3 方案四已端到端跑通
+
+電手 check codebase 確認：`layer3_backtest_etl` DAG（方案四，SPX 金叉死叉
+vs SPY）已實際跑過，`output/backtest_dashboard.html` 產出並 push 上
+GitHub，10 年回補資料（2016-09-06~2026-09-03）確認有跑，結果 6 次交易、
+總報酬 148.13%、Sharpe 0.83、勝率 83.3%。詳細狀態（哪些 repo/分支完成到
+哪、方案三/一/二/五還沒做、`feature/layer3-backtest` 還沒 merge master、
+舊 dashboard 重新設計還沒動工）記在 `layer3_backtest_proposal.md` 第 9 節。
+
+**Layer 1/2 優化需求盤點**（同份文件第 10 節）：Benny 補了 3 項（美台股
+合併 html、multi-select 疊圖、指標定義 glossary），加上原本已知的「交易
+日曆判斷」「`_STATE` 背景著色」共 5 項，**2026-09-06 全部做完**（手機排版
+列為 backlog）——`benny-stock-dashboard/scripts/build_dashboard.py` 改版，
+detail 見 `layer3_backtest_proposal.md` 第 10 節。

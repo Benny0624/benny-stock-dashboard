@@ -559,3 +559,110 @@ dict 放在 `build_dashboard.py` 自己裡面（`benny-stock-dashboard` repo
 
 **最終定案：6 項**（Equity Curve、Underwater Chart、月度/年度熱力圖、
 KPI 彙總表、逐筆交易列表、訊號疊價格圖），砍掉樣本數標示跟曝險比例。
+
+## 9. 2026-09-05 進度更新：方案四（SPX 金叉死叉 sanity check）端到端跑通
+
+電手 check codebase + 實際跑出來的結果如下：
+
+- **`benny-data-infra`**：`sql/stock_dashboard/init_schema.sql` 已加
+  `backtest_universe`/`backtest_runs`/`backtest_equity_curve`/
+  `backtest_trades`/`backtest_kpis` 五張表（commit `dea4683`），欄位跟
+  第 6 節「追問一」拍板後的最終版一致（自然 key `strategy_name`+`ticker`，
+  沒有 `run_id`）。已在 `master`。
+- **`benny-data-pipeline`**：`backtest/`（`engine.py`/`strategies.py`/
+  `db_writer.py`）、`constants/backtest_tickers.py`（目前只有 SPY）、
+  `dags/scripts/backfill_backtest_universe.py`、`layer3_backtest_etl` DAG
+  （`compute_spx_golden_death_cross` → `update_backtest_dashboard`）全部
+  寫完，**在 `feature/layer3-backtest` 分支，還沒 merge 進 `master`**。
+- **`benny-stock-dashboard`**：`scripts/build_backtest_dashboard.py` 已完成
+  並在 `main`（commit `04fcca1`），第 8 節定案的 6 項圖表全做。
+- **實際手動觸發過一次 `layer3_backtest_etl`（2026-09-05）**：
+  `update_backtest_dashboard` task 執行成功，`output/backtest_dashboard.html`
+  已產生並自動 commit + push 上 GitHub（commit `72f0f98`，
+  `layer3-backtest-etl-bot`）。查生成的 html 內嵌 JSON，回測區間是
+  **2016-09-06 ~ 2026-09-03**（確認 10 年回補真的有跑，不是預設的 2 年），
+  方案四（SPX 金叉死叉、標的 SPY）結果：**6 次交易、總報酬 148.13%、
+  Sharpe 0.83、勝率 83.3%**——pipeline（查詢 → 對齊 → VectorBT → 寫 DB →
+  出圖 → push）整條驗證過一次，符合「先拿方案四當 sanity check」的原定
+  計畫。
+- **還沒做的**：
+  - 方案三（SOX/SPX Ratio 輪動，樣本數最多，下一個優先）、方案一/二/五
+    完全沒實作，`constants/backtest_tickers.py` 只有 SPY，2330.TW（已在
+    `INDEX_MAP`）/006208.TW/SOXX/IWM/QQQ 都還沒加。
+  - `feature/layer3-backtest` 分支還沒 merge 進 `master`（DAG 目前是靠
+    分支部署跑起來的，不是穩態）。
+  - 第 6 節追問三提到的「舊 dashboard 重新設計」（美台股合併一份 html、
+    filter 改 multi-select 疊圖、指標定義 glossary）**仍維持原定順序，
+    排在 Layer 3 之後**，`build_dashboard.py` 目前還是 `MARKET` 環境變數
+    分流、單選 `<select>`，還沒開始動這塊。
+
+## 10. Layer 1/2 優化需求盤點（2026-09-05，待 Benny 補）
+
+電手查過 codebase（`benny-data-pipeline/dags/stock_dashboard_etl/
+stock_dashboard_etl.md` 的「已知限制/TODO」章節）跟 `grilling_notes.md`
+全文，**目前寫在文件裡、還沒做的 layer 1/2 優化需求只有這兩項**，沒有找到
+其他遺漏：
+
+1. **交易日曆判斷還沒接進 fetch 層（layer 1）**：`grilling_notes.md` 決定 9
+   拍板要用 `pandas_market_calendars`（美股查 `NYSE`、台股查 `XTAI`）判斷
+   「今天是不是預期交易日」，依賴套件也已加進 `pyproject.toml`（決定 11），
+   但**實際的 `fetch_raw_{market}` task 目前還是用「trailing 5 天窗口 +
+   冪等 upsert」處理排程對不齊，沒有真的呼叫交易日曆判斷**——紅字警示現在
+   無法分辨「休市」跟「API 真的掛了」。
+2. **`dim_triggers` 的 `_STATE` 資料沒有拿來做 dashboard 背景著色（layer 2
+   顯示面）**：資料已經寫進 DB（例如 VIX 恐慌整段期間），只是
+   `build_dashboard.py` 目前只疊事件型 trigger（ENTER/EXIT/BREAKOUT 等）
+   當三角形標記，`_STATE` 沒有對應的連續區間背景色。
+
+**沒有找到的**：`raw_stock`/`silver_stock` 的 retention/清理機制被
+`stock_dashboard_etl.md` 列在「已知限制」，但這是**決定 15 已經明確拍板
+「不設 retention」的既定設計**，不是待做的優化項，故不列進這裡。
+
+**待 Benny 補充**——如果上面兩項之外還有其他 layer 1/2 想優化的地方
+（例如：資料源擴充、fetch 效能、silver 計算邏輯調整等），寫在下面：
+你第九點提到的優化勒，那些很重要怎沒列
+- 1. 美台股合併一份 html
+- 2. filter 改 multi-select 疊圖 以利指標與 TRIGGER 對照
+- 3. 指標定義 glossary 放在圖例
+- 4. 這應該沒提過但之後可能也要優化，就是 HTML 有沒有考慮手機排版?之後希望手機能夠好閱讀
+
+**2026-09-06 拍板**：1-3 跟原本已知的「交易日曆判斷」「`_STATE` 背景著色」
+合併成這一輪要做的 5 項，**現在動工**。第 4 項（手機排版）**列為
+backlog，這輪不做**——multi-select 疊圖引擎重寫完、版面穩定下來再回頭做
+響應式，避免同時改版面+改互動邏輯互相干擾除錯。
+
+**2026-09-06 完成**：5 項全部做完，改在
+`benny-stock-dashboard/scripts/build_dashboard.py`（單一檔案）：
+
+1. **美股+台股合併成一份 `output/dashboard.html`**：拿掉 `MARKET` 環境變數，
+   查詢一次抓全部市場資料，`benny-data-pipeline` 的 `_update_dashboard_fn`
+   也同步改成不再傳 `MARKET` 給這支腳本。舊的 `output/dashboard_us.html`/
+   `dashboard_tw.html` 已從 repo 移除。
+2. **指標 filter 改多選 checklist（依 market 分組）**：選 1 個維持原本深度
+   檢視（MA/RSI/MACD/markPoint）；選 2 個以上自動切換成「指數化比較模式」
+   ——每條線以窗口起點重新指數化成 100，疊在同一張圖，事件型 trigger 改成
+   整張圖的垂直 `markLine`，可以直接看到「A 指標轉折當天，B 指標/個股在
+   做什麼」（例如 VIX 恐慌 vs 台積電走勢）。已用瀏覽器實際跑過真實 DB 資料
+   驗證（10Y殖利率 + VIX + 台積電三線疊圖，垂直虛線跟底色都正確顯示）。
+3. **指標定義 glossary**：`GLOSSARY` dict（14 個指標，2-3 句說明）直接寫死
+   在 `build_dashboard.py`，不 import `benny-data-pipeline`（比照決定
+   12-C 的 `index_name` denormalize 慣例）。目前選取的指標說明顯示在
+   filter 下方的「指標說明」面板，checkbox 也有 hover 提示。
+4. **`_STATE` 背景著色**：`_STATE` 沒存 `is_active`，用
+   `STATE_ACTIVE_RULES`（9 種 state，門檻對照 `compute_triggers.sql`）重新
+   判斷、收斂成連續區間，畫成 `markArea` 半透明色塊，單一/比較模式都有。
+   **門檻是手動同步的**，`compute_triggers.sql` 改門檻這邊要記得跟著改
+   （已在程式碼註解跟 README 標註這個已知限制）。
+5. **交易日曆判斷**：實作在 dashboard 這層（而不是 fetch 層）——
+   `pandas_market_calendars` 查 NYSE/XTAI，算「以今天為準預期最新該有的
+   交易日」，跟 DB 實際 `MAX(updated_at)` 比較，兩個 market 各自獨立顯示
+   狀態，只有「該有資料卻沒有」才標紅，休市日不誤報。實測目前 us/tw 都是
+   `is_stale=false`（最新 2026-09-04，跟預期交易日一致）。fetch 層的
+   trailing 5 天窗口 + 冪等 upsert 沒有變動，決定 9 要解決的是「紅字何時
+   該亮」，不是抓資料的邏輯本身。
+
+已用真實 DuckDB 資料（10 年歷史）實際跑過 `build_dashboard.py`、在瀏覽器
+打開驗證過（多選比較、glossary、狀態列、STATE 底色都正常），程式碼跟
+`benny-data-pipeline`/`benny-data-infra` 的 README 都同步更新。**還沒做**：
+第 4 項手機排版（backlog）；`output/dashboard.html` 的程式碼改動還沒
+commit/push 到 GitHub（本機驗證過，push 前想再讓你看一眼再動手）。
