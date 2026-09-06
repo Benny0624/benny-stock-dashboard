@@ -112,6 +112,31 @@ GLOSSARY: dict[int, str] = {
 # `_STATE` trigger 沒有存 is_active 欄位，只有 trigger_value（原始數值），
 # 要不要著色靠這份門檻對照表重新判斷——**門檻必須跟 compute_triggers.sql
 # 裡對應 CTE 的 is_active 條件保持一致**，SQL 改門檻這裡要記得跟著改。
+TRIGGER_GLOSSARY: dict[str, str] = {
+    "YIELD_INVERSION_ENTER": "10年期-2年期公債殖利率利差由正轉負（開始倒掛），常見的經濟衰退領先訊號。",
+    "YIELD_INVERSION_EXIT": "殖利率利差由負轉正（倒掛結束/解倒掛）。",
+    "VIX_PANIC_ENTER": "VIX 站上 30，市場進入恐慌狀態。",
+    "VIX_PANIC_EXIT": "VIX 跌破 30，恐慌狀態解除。",
+    "VIX_EXTREME_FEAR_ENTER": "VIX 站上 35，市場進入極度恐慌。",
+    "VIX_EXTREME_FEAR_EXIT": "VIX 跌破 35，極度恐慌解除。",
+    "VIX_COMPLACENCY_ENTER": "VIX 跌破 12，市場過度樂觀（自滿）。",
+    "VIX_COMPLACENCY_EXIT": "VIX 站上 12，自滿狀態解除。",
+    "SPX_200SMA_BREAKOUT": "S&P 500 股價站上 200 日均線（長期多頭訊號）。",
+    "SPX_200SMA_BREAKDOWN": "S&P 500 股價跌破 200 日均線（長期空頭訊號）。",
+    "SPX_GOLDEN_CROSS": "S&P 500 的 50 日均線由下往上穿越 200 日均線（黃金交叉，中長期偏多訊號）。",
+    "SPX_DEATH_CROSS": "S&P 500 的 50 日均線由上往下穿越 200 日均線（死亡交叉，中長期偏空訊號）。",
+    "SPX_50SMA_BREAKOUT": "S&P 500 股價站上 50 日均線（短中期多頭訊號）。",
+    "SPX_50SMA_BREAKDOWN": "S&P 500 股價跌破 50 日均線（短中期空頭訊號）。",
+    "RUT_SPX_200SMA_BREAKOUT": "羅素2000/SPX 相對強弱比值站上 200 日均線（中小型股開始相對強勢）。",
+    "RUT_SPX_200SMA_BREAKDOWN": "羅素2000/SPX 相對強弱比值跌破 200 日均線（中小型股轉弱）。",
+    "DJI_IXIC_ROC_ENTER": "道瓊/那指比值 20 個交易日漲幅超過 3%（資金從科技股轉向傳產價值股）。",
+    "DJI_IXIC_ROC_EXIT": "道瓊/那指比值 20 日動能降回 3% 以下。",
+    "SOX_SPX_RATIO_NEW_HIGH_252D": "SOX/SPX 相對強弱比值創 252 個交易日（約 52 週）新高，半導體相對大盤走強。",
+    "SOX_SPX_RATIO_NEW_LOW_252D": "SOX/SPX 相對強弱比值創 252 個交易日新低，半導體相對大盤走弱。",
+    "SOX_MACD_BULLISH_CROSS": "費城半導體指數月線 MACD 黃金交叉（中長期偏多轉向訊號）。",
+    "SOX_MACD_BEARISH_CROSS": "費城半導體指數月線 MACD 死亡交叉（中長期偏空轉向訊號）。",
+}
+
 STATE_ACTIVE_RULES: dict[str, dict] = {
     "YIELD_INVERSION_STATE": {"is_active": lambda v: v < 0, "label": "殖利率倒掛", "color": "rgba(230,103,103,0.16)"},
     "VIX_PANIC_STATE": {"is_active": lambda v: v >= 30, "label": "VIX 恐慌 (>=30)", "color": "rgba(230,103,103,0.16)"},
@@ -376,6 +401,11 @@ HTML_TEMPLATE = """<!doctype html>
   .glossary-item { font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.5; }
   .glossary-item b { color: var(--text-primary); }
   .glossary-empty { font-size: 13px; color: var(--text-muted); }
+  #trigger-legend { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  #trigger-legend .trigger-legend-title { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; }
+  #trigger-legend .trigger-item { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; line-height: 1.5; }
+  #trigger-legend .trigger-item .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  #trigger-legend .trigger-item code { color: var(--text-primary); font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -410,6 +440,7 @@ HTML_TEMPLATE = """<!doctype html>
   <h2 id="level-title">走勢</h2>
   <div class="hint" id="level-hint"></div>
   <div id="level-chart" class="chart"></div>
+  <div id="trigger-legend"></div>
 </div>
 
 <div class="panel" id="rsi-panel">
@@ -429,6 +460,7 @@ const INDICES = __INDICES_JSON__;
 const DATA_STATUS = __DATA_STATUS_JSON__;
 const MARKET_LABELS = { us: "美股/總經", tw: "台股" };
 const STATE_META = __STATE_META_JSON__;
+const TRIGGER_GLOSSARY = __TRIGGER_GLOSSARY_JSON__;
 
 const AXIS_TEXT_STYLE = { fontSize: 14, fontWeight: "bold", color: "#ffffff" };
 const AXIS_LABEL_STYLE = { fontSize: 12, fontWeight: "bold", color: "#c3c2b7" };
@@ -459,6 +491,7 @@ const levelHint = document.getElementById("level-hint");
 const rsiPanel = document.getElementById("rsi-panel");
 const macdPanel = document.getElementById("macd-panel");
 const glossaryBody = document.getElementById("glossary-body");
+const triggerLegend = document.getElementById("trigger-legend");
 
 const levelChart = echarts.init(document.getElementById("level-chart"));
 const rsiChart = echarts.init(document.getElementById("rsi-chart"));
@@ -609,6 +642,33 @@ function renderGlossary(ids) {
     div.innerHTML = `<b>${info.index_name}</b>${info.is_synthetic ? "（比值）" : ""}：${info.glossary || "（尚無說明）"}`;
     glossaryBody.appendChild(div);
   }
+}
+
+function renderTriggerLegend(ids) {
+  const start = windowStartDate();
+  const seen = new Set();
+  const rows = [];
+  for (const id of ids) {
+    for (const t of INDICES[id].triggers) {
+      if (t.date < start || seen.has(t.type)) continue;
+      seen.add(t.type);
+      const isEnter = isEnterEvent(t.type);
+      rows.push({
+        type: t.type,
+        color: isEnter ? GOOD : CRITICAL,
+        desc: TRIGGER_GLOSSARY[t.type] || "（尚無說明）",
+      });
+    }
+  }
+  if (!rows.length) {
+    triggerLegend.innerHTML = "";
+    return;
+  }
+  rows.sort((a, b) => a.type.localeCompare(b.type));
+  const items = rows.map((r) =>
+    `<div class="trigger-item"><span class="dot" style="background:${r.color}"></span><code>${r.type}</code>${r.desc}</div>`
+  ).join("");
+  triggerLegend.innerHTML = `<div class="trigger-legend-title">本圖轉折點說明（綠點=進入/達成，紅點=離開/相反方向）</div>${items}`;
 }
 
 function renderKpis(ids) {
@@ -763,6 +823,7 @@ function renderAll() {
   renderGlossary(ids);
   renderKpis(ids);
   renderLevelChart(ids);
+  renderTriggerLegend(ids);
   renderRsiChart(ids);
   renderMacdChart(ids);
 }
@@ -788,6 +849,7 @@ def main() -> None:
         conn.close()
 
     state_meta = {k: {"label": v["label"], "color": v["color"]} for k, v in STATE_ACTIVE_RULES.items()}
+    trigger_glossary = TRIGGER_GLOSSARY
 
     def _dumps(obj) -> str:
         return json.dumps(obj, ensure_ascii=False, default=str)
@@ -798,6 +860,7 @@ def main() -> None:
         .replace("__INDICES_JSON__", _dumps(indices))
         .replace("__DATA_STATUS_JSON__", _dumps(data_status))
         .replace("__STATE_META_JSON__", _dumps(state_meta))
+        .replace("__TRIGGER_GLOSSARY_JSON__", _dumps(trigger_glossary))
     )
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(html)
