@@ -107,8 +107,9 @@ merge master、舊 dashboard 重新設計，狀態記在 `layer3_backtest_propos
 - **不做**：整個指標/訊號 dashboard 改即時後端 API（已擱置——GitHub Pages
   免費託管運作穩定，這塊不動）。
 - **要做的常駐服務**：一支很薄的觸發端點（估計一支 FastAPI/Flask 檔案、
-  一個 POST route）——收「策略/標的/區間」參數，伺服器端用存好的憑證呼叫
-  Airflow REST API 觸發 DAG，回傳查詢用 ID。理由：瀏覽器 JS 不能直接打
+  一個 POST route）——收「策略組合+標的」參數（不含區間，理由見下），
+  伺服器端用存好的憑證呼叫 Airflow REST API 觸發 DAG，回傳查詢用 ID。
+  理由：瀏覽器 JS 不能直接打
   Airflow REST API（帳密曝露前端 + CORS 問題，`basic_auth` 不是設計給
   公開前端呼叫的）。
 - **對外開洞方式**：Cloudflare Tunnel——`cloudflared` container 跑在
@@ -155,10 +156,16 @@ merge master、舊 dashboard 重新設計，狀態記在 `layer3_backtest_propos
 
 ---
 
-## 待處理（2026-09-16 起，下次繼續電）
+## 已解決的誤解（存查）
 
-1. **Layer 4 待拷問**：Benny 提出「Layer 4 = 算 Layer 3『策略+標的』組合
-   （不含區間，已依上面決定拿掉）的報酬排行榜」，細節完全還沒想——跟
-   Layer 3 本身已經在做的「策略組合排行榜」分工界線是什麼、是不是同一張
-   表多一層聚合（例如按報酬排序/分頁）、還是全新的彙總層（例如跨策略統計
-   勝率分布、對比大盤基準）。下次先問清楚這條分工線再往下設計。
+- **（2026-09-17）沒有 Layer 4**：追問後 Benny 確認架構只到 Layer 3 為止——
+  使用者選「策略+標的」組合、觸發計算、績效寫回表、依報酬排行，這整套就是
+  Layer 3 排行榜本身，不是獨立的第四層。先前筆記把同一件事誤拆成「Layer 3
+  做組合、Layer 4 做排行榜」，是電手自己想錯層級，已修正。
+
+## 待處理
+
+目前無待解項目。架構/規則層面全部拍板（Phase 1 策略組合排行榜設計已收斂），
+但**尚未動工開發**——`backtest_strategy_defs` 表、觸發端點、Cloudflare Tunnel
+都還只是設計，下次要問的是「什麼時候開始 Step 1（schema 改動）」還是先問
+其他優先順序。
