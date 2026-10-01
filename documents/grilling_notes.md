@@ -1,8 +1,47 @@
-# Grilling Session 筆記 — Benny Stock Dashboard（濃縮版，2026-09-16 整理）
+# Grilling Session 筆記 — Benny Stock Dashboard（濃縮版，2026-09-28 整理）
 
 來源文件：`user_request.txt`、`market_indicators_dashboard_architecture.pdf`
 本檔記錄專案 grill-me 過程拍板的決定與待解問題。舊版逐輪討論過程過長，
 已濃縮成結論；只列「決定了什麼」跟「為什麼」，來回問答細節可從 git 舊版找回。
+
+## 第二、三輪拍板（2026-10-01）
+
+- **Q5 未完成/失敗組合**：有結果才上榜，不做「計算中/失敗」UI。失敗的
+  組合由每日重算自動再跑；仍失敗由 Benny 在 Airflow UI 處理。0 次訊號的
+  組合算「成功、0 次交易」，寫進 results 照常上榜。
+- **Q6 重複送出**：不擋。`combo_key` unique index + `INSERT OR IGNORE`
+  保證 defs 只有一列；重複觸發的 DAG 後者覆寫前者，結果正確。
+- **Q7 push 時機**：只在每日重算 DAG 跑完時推（依 Q11 一天最多兩次），
+  觸發服務/單一組合 DAG 不推，新組合等下次重算才上榜。
+- **Q8 排行榜欄位/排序**：欄位 CAGR、Sharpe、最大回撤、勝率、交易次數，
+  總報酬當參考欄位。預設依 Sharpe 排序，表頭可點擊改依 CAGR 排（前端 JS
+  排序）。不放算術年均報酬（與 CAGR 重複）。
+- **Q9 跨市場組合**：允許。`resolve_condition_dates()` 統一規則：訊號日
+  不是標的市場交易日，就往後延到下一個交易日。
+- **Q10 每日重算觸發方式**：不用 `TriggerDagRunOperator`，改用 Airflow
+  Dataset 排程（data-aware scheduling）。us/tw DAG 寫完 Layer 2 的 task
+  宣告 `outlets=[Dataset(...)]`，每日重算 DAG 用 `schedule=` 訂閱這些
+  Dataset，上游跑完自動觸發，上游 DAG 不用知道下游存在。Dataset 是
+  Airflow 2.4+ 功能，目前 image `apache/airflow:2.11.0` 可用；升 Airflow 3
+  時要把 `Dataset` 改名 `Asset`（import 改 `airflow.sdk`）。
+- **Q11 休市日照樣重算**：用 OR 條件
+  `schedule=(ds_us_silver | ds_tw_silver)`（Airflow 2.9+），us 或 tw 任一邊
+  更新就跑，一天最多兩次，DAG 設 `max_active_runs=1` 避免重疊。不用 AND：
+  一邊休市沒發 Dataset 事件，另一邊的新資料會延遲上榜。
+
+## 第一輪拍板（2026-09-28）
+
+- **Q1 排名每日更新**：新增每日重算 DAG，Layer 2 更新後把
+  `backtest_strategy_defs` 全部組合重算、覆寫 `backtest_strategy_results`；
+  使用者觸發只補從沒算過的組合。
+- **Q2 DuckDB 單寫者**：觸發服務照原設計直接讀寫 DuckDB，遇 lock 就重試/
+  排隊，不改架構。理由：寫入頻率很低（每日重算一次 + 零星使用者觸發），
+  撞 lock 機率低，不值得為此改介面。
+- **Q3 可選 trigger_type**：ENTRY/EXIT 類兩邊都能用，排除 STATE 類。
+- **Q4 Phase 1 使用者**：Benny + 私下拿到 token 的少數朋友。
+- **git push**：改成定時統一推（時間見 Q7），不再每次觸發各推一次。
+- **alpha/beta benchmark**：不用決定——`engine.py` 已用「同一檔標的
+  buy & hold」當 benchmark，組合回測沿用。
 
 ## 專案一句話摘要
 
@@ -38,7 +77,7 @@ dashboard html、推上 GitHub Pages。
   重算）。
 - **Airflow**：兩個獨立 DAG（`us_market_daily_etl`/`tw_market_daily_etl`，
   排程時間對不上故拆開），task chain `fetch_raw → load_raw →
-  [compute_ma_rsi, compute_ratios] → update_dashboard`，全掛
+[compute_ma_rsi, compute_ratios] → update_dashboard`，全掛
   `pool="duckdb_writer"`。Layer 3 是獨立的 `layer3_backtest_etl` DAG。
 - **Backfill**：一次性 bulk 抓 2 年歷史（非 Airflow `catchup=True` 逐日，
   避免 rate limit），只灌 `raw_stock`/`silver_stock`，不碰 dashboard html；
@@ -65,7 +104,7 @@ dashboard html、推上 GitHub Pages。
 2. `index_map.py` 常數檔（`IndexDef` dataclass 統一真實/合成指標，
    `real_indices_for()`/`synthetic_indices_for()` helper）。
 3. 兩個 DAG 骨架（task chain 見上）+ backfill script（`benny-data-pipeline/
-   dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
+dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 4. Trigger SQL（`compute_triggers.sql`：殖利率倒掛、VIX 恐慌閾值 30/
    極度恐慌 35、SPX 均線金死叉、RUT-SPX 200SMA 突破、DJI-IXIC 20日動量
    ROC>+3%、SOX-SPX 252 交易日新高破底）+ 月線 MACD 獨立 `PythonOperator`
@@ -78,14 +117,13 @@ dashboard html、推上 GitHub Pages。
    `sql/*/init_schema.sql` 全部執行（原本寫死只讀一個檔，漏掉新 schema
    部署）；三份 repo 的 README 架構圖/CI-CD 描述互相對齊。
 
-## Layer 3 回測（2026-09-05 已跑通）
+## Layer 3 回測（2026-09-06 已完成並 merge master）
 
-方案四（SPX 金叉死叉 vs SPY）端到端跑通：10 年回補
-（2016-09-06~2026-09-03），`layer3_backtest_etl` DAG、
-`output/backtest_dashboard.html` 產出並 push，結果 6 次交易、總報酬
-148.13%、Sharpe 0.83、勝率 83.3%。方案一/二/三/五、`feature/layer3-backtest`
-merge master、舊 dashboard 重新設計，狀態記在 `layer3_backtest_proposal.md`
-第 9 節。
+10 年回補（2016-09-06~2026-09-03），`layer3_backtest_etl` DAG、
+`output/backtest_dashboard.html` 產出並 push。6 個寫死策略（方案一/三×2/
+四/五）已跑通，`benny-data-pipeline` PR #9/#10/#11 與 `benny-data-infra`
+的 Layer 3 schema 都已 merge master。代表結果：方案四（SPX 金叉死叉 vs SPY）
+6 次交易、總報酬 148.13%、Sharpe 0.83、勝率 83.3%。
 
 ## Layer 1/2 Dashboard 優化（2026-09-06 已完成）
 
@@ -128,7 +166,8 @@ merge master、舊 dashboard 重新設計，狀態記在 `layer3_backtest_propos
 - **快取/重算**：**乾脆每次重算，不做快取**（VectorBT 單組合幾秒內跑完，
   不需要為此加快取複雜度）。開一張表記錄「指標進出場策略+標的」組合績效
   （不含區間，理由見上），重算前先掃這張表，算過的直接回吐，沒算過才真的
-  觸發 Airflow 計算。
+  觸發 Airflow 計算。**（2026-09-28 補充）**另有每日重算 DAG 把全部組合
+  重算一次，排名才會隨新資料變動，見 Q1。
 - **標的/指標擴充**：維持開發者手動加（`index_map.py`/
   `backtest_tickers.py` 加一筆 + 重跑 backfill 即可擴充，不需要架構改動），
   不開放使用者自訂任意 ticker（避免「選了才發現沒歷史資料」的等待體驗）。
@@ -163,9 +202,19 @@ merge master、舊 dashboard 重新設計，狀態記在 `layer3_backtest_propos
   Layer 3 排行榜本身，不是獨立的第四層。先前筆記把同一件事誤拆成「Layer 3
   做組合、Layer 4 做排行榜」，是電手自己想錯層級，已修正。
 
-## 待處理
+## 實作進度（2026-09-27 盤點）
 
-目前無待解項目。架構/規則層面全部拍板（Phase 1 策略組合排行榜設計已收斂），
-但**尚未動工開發**——`backtest_strategy_defs` 表、觸發端點、Cloudflare Tunnel
-都還只是設計，下次要問的是「什麼時候開始 Step 1（schema 改動）」還是先問
-其他優先順序。
+策略組合排行榜**一行程式碼都還沒寫**，只有設計文件
+（`layer3_backtest_proposal.md`）。待做清單：
+
+- 程式：`init_schema.sql` 加 `backtest_strategy_defs`/
+  `backtest_strategy_results`、`engine.py` 通用化（`combo_backtest()` +
+  反向驗證）、`combo_key` 共用函式、新 DAG
+  `layer3_strategy_combo_backtest`、FastAPI 觸發服務、前端
+  `strategy_lab.html`。
+- Benny 手動：買網域 + Cloudflare Tunnel、產生
+  `BACKTEST_TRIGGER_API_TOKEN` 放 Lightsail `.env`、手機肉眼確認 dashboard
+  排版。
+- 設計問題已全部拍板（Q1~Q11，見檔案開頭）。動工前先把拍板內容同步進
+  `layer3_backtest_proposal.md`（每日重算 DAG + Dataset OR 排程、push 時機、
+  排行榜欄位/排序、跨市場日期對齊、0 次訊號當成功、STATE 類排除）。
