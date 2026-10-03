@@ -29,6 +29,34 @@
   更新就跑，一天最多兩次，DAG 設 `max_active_runs=1` 避免重疊。不用 AND：
   一邊休市沒發 Dataset 事件，另一邊的新資料會延遲上榜。
 
+## 第四輪拍板（2026-10-03，對照實際程式碼盤點）
+
+- **Q12 交易標的價格每日更新**：`backtest_universe` 原本只靠一次性
+  `backfill_backtest_universe.py` 寫入，每日 DAG 不更新，每日重算等於用舊
+  價格。改成 `_build_market_dag` 加 `fetch_backtest_universe` task，依
+  `BacktestTicker.market` 只抓該市場標的（us：SPY/SOXX；tw：2330.TW/
+  006208.TW），寫完才發 Dataset 事件。標的照既有慣例同一張表、用 `market`
+  欄位分台美，不拆表。
+- **Q13 跨市場不偷看未來**：Q9 的對齊規則修正——訊號市場 ≠ 標的市場時，
+  進場日是標的市場「訊號日之後」的第一個交易日（嚴格晚於訊號日）。美股 T 日
+  收盤訊號，台股 T 日收盤時還不存在，不能同日進場。同市場維持訊號日收盤
+  進場（跟現有 6 個策略一致）。目前 `dim_triggers` 全是美股指標，台股標的
+  的組合都套跨市場規則。
+- **Q14 年化用交易日數**：`engine.py` 的 `freq="D"` 讓 vectorbt 一年算
+  365 列，實際一年約 252 個交易日，Sharpe 高估約 1.2 倍、CAGR 被放大。
+  改設 `year_freq='252 days'`，修完重跑現有 6 個策略更新 KPI（方案四
+  Sharpe 0.83 是高估值）。
+- **trigger 清單常數**：`dim_triggers` 沒有欄位標 ENTRY/EXIT/STATE，名稱
+  後綴也不統一（`SPX_GOLDEN_CROSS`、`*_BREAKOUT`）。在 `constants/` 新增
+  可選 trigger 清單（排除 `*_STATE` 共 9 個，其餘約 22 個，附中文顯示名、
+  所屬市場），觸發服務驗證、前端下拉、組合描述文字共用這一份。
+- **反向驗證差異**：既有 `_signal_series()` 把不在交易日的訊號直接丟掉，
+  新規則改往後延，`combo_backtest()` 重跑既有策略可能有少數差異，要逐筆
+  確認差異都來自這條規則，不能只比相等。
+- **觸發服務掛 DuckDB volume**：DuckDB 在 named volume `duckdb-data:/data`，
+  觸發服務 container 掛同一個 volume、沿用 `DUCKDB_PATH`。Airflow REST API
+  已開 `basic_auth`，不用改。
+
 ## 第一輪拍板（2026-09-28）
 
 - **Q1 排名每日更新**：新增每日重算 DAG，Layer 2 更新後把
@@ -215,6 +243,6 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 - Benny 手動：買網域 + Cloudflare Tunnel、產生
   `BACKTEST_TRIGGER_API_TOKEN` 放 Lightsail `.env`、手機肉眼確認 dashboard
   排版。
-- 設計問題已全部拍板（Q1~Q11，見檔案開頭）。動工前先把拍板內容同步進
+- 設計問題已全部拍板（Q1~Q14，見檔案開頭）。動工前先把拍板內容同步進
   `layer3_backtest_proposal.md`（每日重算 DAG + Dataset OR 排程、push 時機、
   排行榜欄位/排序、跨市場日期對齊、0 次訊號當成功、STATE 類排除）。
