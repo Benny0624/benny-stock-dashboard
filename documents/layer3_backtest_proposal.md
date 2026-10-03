@@ -4,7 +4,14 @@
 schema 草稿、圖表定案等）已完工，內容濃縮進 `grilling_notes.md` 的「已完成
 的開發」章節；本檔只保留**接下來要動工的部分**——把已跑通的 Layer 3 回測
 pipeline，從「開發者手動觸發 6 個寫死策略」升級成「使用者自選策略組合的
-排行榜」。逐輪問答細節可從 git 舊版找回。
+排行榜」。逐輪問答細節可從 git 舊版找回：
+`git show b681f4d:documents/layer3_backtest_proposal.md`——程式碼註解裡
+引用的「追問一~四」「方案 B」「第 N 節」都是指這個舊版的章節編號。
+
+**執行環境**：全部跑在地端電腦（WSL2 + Docker Desktop），DuckDB 在 Docker
+volume `benny-infra-duckdb-data`。各 repo README 寫的 EC2/Lightsail 是
+「之後正式上線」的規劃，**目前沒有雲端主機**；本檔說的「主機」都是指這台
+地端電腦。
 
 ## 0. 已完工基礎（本次開發直接建立在這之上，不重複列）
 
@@ -266,9 +273,14 @@ scheduler 平行的服務，不是 DAG 的一部分）。
 
 ## 5. Cloudflare Tunnel + 網域設定（Benny 需要動手的部分）
 
-現況：Lightsail 主機刻意不開任何 inbound port。第 4 節的觸發服務要讓
-GitHub Pages 前端打得到，需要對外露出，但不推翻「防火牆全關」的原則——
-用 Cloudflare Tunnel（`cloudflared` 只主動連出去，不用開 port）。
+現況：服務跑在地端電腦（WSL2 + Docker Desktop），家用網路沒有固定 IP、
+也不該在路由器開 port 轉發。第 4 節的觸發服務要讓 GitHub Pages 前端打得到，
+用 Cloudflare Tunnel（`cloudflared` 只主動連出去，不用開任何 inbound port，
+也不需要固定 IP）。
+
+**限制**：電腦關機或 Docker Desktop 沒開時，Tunnel 跟觸發服務都不在線，
+朋友送出組合會失敗（前端顯示連線失敗）；每日重算也不會跑。這跟現有每日
+DAG「電腦沒開就不觸發」是同一個限制，之後搬到常駐主機才會消失。
 
 你目前沒有網域也不想用臨時 Tunnel（網址隨機、重啟就換），所以完整流程
 包含買網域：
@@ -302,10 +314,10 @@ GitHub Pages 前端打得到，需要對外露出，但不推翻「防火牆全�
   **把這串 token 存起來**，下一步 docker-compose 要用。
 - 這個畫面先不要關，之後還要回來設定 Public Hostname（Step 5）。
 
-### Step 4：Lightsail 主機上加 `cloudflared` container
+### Step 4：地端 docker-compose 加 `cloudflared` container
 
-在現有 `docker-compose.yaml`（跟 Airflow/DuckDB 服務同一份）加一個新
-service：
+在 `benny-data-pipeline/local/airflow.docker-compose.yaml`（跟 Airflow、
+觸發服務同一份）加一個新 service：
 
 ```yaml
 services:
@@ -317,8 +329,9 @@ services:
       - TUNNEL_TOKEN=<Step 3 拿到的 token>
 ```
 
-`docker compose up -d cloudflared` 啟動。這個 container 只會主動連出去
-接 Cloudflare 邊緣網路，主機防火牆 inbound 規則完全不用動。
+token 不要寫死在 yaml，放 `benny-data-pipeline/.env`（`TUNNEL_TOKEN=...`，
+不進 git），yaml 用 `${TUNNEL_TOKEN}` 帶入。`make start` 會一起啟動。這個
+container 只會主動連出去接 Cloudflare 邊緣網路，不用開任何 port。
 
 ### Step 5：設定 Public Hostname（回到 Step 3 那個畫面）
 
@@ -335,8 +348,8 @@ services:
 
 ### Step 6：驗證
 
-主機外面（例如你自己的筆電，不要在 Lightsail 上測，測的就是「外部連得到
-嗎」）：
+從家用網路外面測（例如手機關 Wi-Fi 用行動網路開終端機 app，或請朋友打），
+測的就是「外部連得到嗎」；在同一台電腦上測不算：
 
 ```bash
 curl https://api.你的網域.com/api/backtest/trigger -X POST \
@@ -350,8 +363,9 @@ curl https://api.你的網域.com/api/backtest/trigger -X POST \
 ## 6. 共用密鑰設定
 
 觸發服務用一個環境變數（例如 `BACKTEST_TRIGGER_API_TOKEN`）存一組你自己
-選的隨機字串（`openssl rand -hex 16` 產生即可），存進 Lightsail 主機的
-`.env`（比照現有 `FRED_API_KEY`/`GITHUB_PAT` 的存法，不進 git）。前端頁面
+選的隨機字串（`openssl rand -hex 16` 產生即可），存進
+`benny-data-pipeline/.env`（比照現有 `FRED_API_KEY`/`GITHUB_PAT` 的存法，
+不進 git；`.env.example` 加一行空值 + 註解）。前端頁面
 （第 7 節）會有一個輸入框讓你貼這組字串，存在瀏覽器 `localStorage`（別人
 不知道這組字串就打不了你的 API，公開網址本身不是秘密，這組 token 才是）。
 

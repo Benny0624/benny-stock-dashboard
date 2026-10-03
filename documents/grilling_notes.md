@@ -178,10 +178,10 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
   理由：瀏覽器 JS 不能直接打
   Airflow REST API（帳密曝露前端 + CORS 問題，`basic_auth` 不是設計給
   公開前端呼叫的）。
-- **對外開洞方式**：Cloudflare Tunnel——`cloudflared` container 跑在
-  Lightsail 主機上，只主動連出去接 Cloudflare 邊緣網路（跟現有
-  self-hosted runner「主動連出去 poll GitHub」同一種模式），主機防火牆
-  inbound 規則維持全關，不推翻既有安全原則。
+- **對外開洞方式**：Cloudflare Tunnel——`cloudflared` container 跟 Airflow
+  一起跑在地端電腦（WSL2 + Docker Desktop，目前沒有雲端主機），只主動連出去
+  接 Cloudflare 邊緣網路，不用開任何 inbound port、不需要固定 IP。電腦關機時
+  觸發服務不在線，跟每日 DAG 同一個限制。
 - **策略組合怎麼選（Phase 1）**：從現有 `dim_triggers` 約 30 種
   trigger_type 挑，**不做自訂數值運算式引擎**（那是即時對任意指標算
   `>` / `<` / 穿越的通用引擎，量級大很多，留給 APP 化階段）。進場/出場
@@ -230,19 +230,22 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
   Layer 3 排行榜本身，不是獨立的第四層。先前筆記把同一件事誤拆成「Layer 3
   做組合、Layer 4 做排行榜」，是電手自己想錯層級，已修正。
 
-## 實作進度（2026-09-27 盤點）
+## 實作進度（2026-10-03 更新）
 
-策略組合排行榜**一行程式碼都還沒寫**，只有設計文件
-（`layer3_backtest_proposal.md`）。待做清單：
+開發順序見 `layer3_backtest_proposal.md` 第 8 節。分支：
+`benny-data-infra` `feature/layer3-leaderboard-schema`、`benny-data-pipeline`
+`feature/layer3-leaderboard`、本 repo `feature/layer3-leaderboard-docs`。
 
-- 程式：`init_schema.sql` 加 `backtest_strategy_defs`/
-  `backtest_strategy_results`、`engine.py` 通用化（`combo_backtest()` +
-  反向驗證）、`combo_key` 共用函式、新 DAG
-  `layer3_strategy_combo_backtest`、FastAPI 觸發服務、前端
-  `strategy_lab.html`。
-- Benny 手動：買網域 + Cloudflare Tunnel、產生
-  `BACKTEST_TRIGGER_API_TOKEN` 放 Lightsail `.env`、手機肉眼確認 dashboard
-  排版。
-- 設計問題已全部拍板（Q1~Q14，見檔案開頭）。動工前先把拍板內容同步進
-  `layer3_backtest_proposal.md`（每日重算 DAG + Dataset OR 排程、push 時機、
-  排行榜欄位/排序、跨市場日期對齊、0 次訊號當成功、STATE 類排除）。
+| 步驟 | 狀態 |
+|---|---|
+| 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 已寫，in-memory DuckDB 驗證可重複執行、`combo_key` 去重；**還沒套用到地端 DuckDB** |
+| 2. `engine.py` 年化改 252 交易日 | ✅ 已寫，假資料驗證 CAGR/Sharpe 正確；**還沒重跑 6 個策略更新 `backtest_kpis`** |
+| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | 未開始 |
+| 4. 單一組合 DAG + 觸發服務 | 未開始 |
+| 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 |
+| 6. 前端 `strategy_lab.html` | 未開始 |
+| 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） |
+
+Benny 手動待辦：買網域 + Cloudflare Tunnel、產生
+`BACKTEST_TRIGGER_API_TOKEN` 放 `benny-data-pipeline/.env`、手機肉眼確認
+dashboard 排版。
