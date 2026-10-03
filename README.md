@@ -174,6 +174,8 @@ flowchart LR
 - `documents/grilling_notes.md`——指標/訊號 dashboard 的完整設計討論
   紀錄（拍板決定、追問過程），這份 README 只整理現況，設計理由一律看
   這份。
+- `documents/runbook_layer3_leaderboard.md`——套用排行榜 schema + 重跑
+  回測的逐步操作手冊。
 - `documents/layer3_backtest_proposal.md`——策略組合排行榜的開發規格
   （舊版的寫死策略規劃/討論在 git 歷史 `b681f4d`）。
 - `documents/market_indicators_dashboard_architecture.pdf`——最原始需求
