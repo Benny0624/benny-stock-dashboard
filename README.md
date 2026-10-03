@@ -12,7 +12,7 @@ repo 只做一件事：**查 DuckDB → 產靜態 html → push**。
 |---|---|---|
 | **指標**（Indicator） | 8 大美股/總經數據 + 台股大盤/台積電，另外算 3 個跨指標比值 | `raw_stock`/`silver_stock` |
 | **訊號**（Signal / Trigger） | 指標觸發某個量化條件的事件（金叉死叉、恐慌、倒掛...） | `dim_triggers` |
-| **策略**（Strategy） | 拿訊號當進出場依據，用 VectorBT 回測績效 | `backtest_*`（4 張表） |
+| **策略**（Strategy） | 拿訊號當進出場依據，用 VectorBT 回測績效；寫死策略 + 使用者自組的策略組合（開發中） | `backtest_*`（寫死策略 4 張表）、`backtest_strategy_defs`/`backtest_strategy_results`（策略組合） |
 | **儀表板**（Dashboard） | 把上面三個查出來畫成圖，這個 repo 負責 | `output/*.html` |
 
 ## 指標（Indicator）
@@ -79,8 +79,32 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
 | 倒掛解開避險 | SPY | 解倒掛 + 倒掛超過100日 + SPX 跌破MA50 | **未定義** | 待補（缺出場規則） |
 
 基準一律是「回測起點就買、抱到最後」的 buy & hold，跟策略同一天起算，
-公平比較「進出場」vs「全押抱著」。詳細規劃/討論見
-`documents/layer3_backtest_proposal.md`。
+公平比較「進出場」vs「全押抱著」。CAGR/Sharpe/Sortino/Calmar 一律用
+一年 252 個交易日年化（2026-10-03 修正，之前用 365 天，CAGR 跟 Sharpe
+都高估；修正後要重跑 `layer3_backtest_etl` 才會更新到 `backtest_kpis`）。
+
+### 策略組合排行榜（開發中）
+
+使用者自選「進場條件 + 出場條件 + 標的」，算完上排行榜，取代「開發者寫死
+6 個策略」。規格見 `documents/layer3_backtest_proposal.md`，拍板理由見
+`documents/grilling_notes.md`，重點：
+
+- 條件從 `dim_triggers` 的 ENTRY/EXIT 類 trigger 挑（排除 `_STATE`），
+  進場/出場各最多 2 個、AND/OR 組合；出場也可選固定持有 N 個交易日。
+- 不開放選時間區間，一律用全部歷史。允許跨市場組合（美股訊號配台股標的），
+  進場日嚴格晚於訊號日，不偷看未來。
+- 每天 us/tw 任一市場更新後全部組合重算（排名才會動），重算完才 push
+  排行榜 html；新組合下次重算才上榜。
+- 送出組合要經過一支 FastAPI 觸發服務 + Cloudflare Tunnel（瀏覽器不能直接
+  帶 Airflow 帳密），用共用 token 認證，只給 Benny + 少數朋友。
+
+| 元件 | 位置 | 狀態 |
+|---|---|---|
+| `backtest_strategy_defs`/`backtest_strategy_results` 兩張表 | `benny-data-infra` `sql/stock_dashboard/init_schema.sql` | 已寫，未套用 |
+| `combo_backtest()`、`combo_triggers.py` | `benny-data-pipeline` `backtest/` | 未開始 |
+| `layer3_strategy_combo_backtest` DAG（單一組合）、`layer3_strategy_leaderboard_daily` DAG（每日重算 + push） | `benny-data-pipeline` | 未開始 |
+| 觸發服務 `services/backtest_trigger/` + `cloudflared` | `benny-data-pipeline` | 未開始 |
+| `output/strategy_lab.html` | 本 repo | 未開始 |
 
 ## 儀表板（Dashboard）
 
@@ -88,6 +112,7 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
 |---|---|---|
 | `output/dashboard.html` | 指標走勢 + 訊號標記（美股+台股合併一份） | `scripts/build_dashboard.py` |
 | `output/backtest_dashboard.html` | 策略回測結果 | `scripts/build_backtest_dashboard.py` |
+| `output/strategy_lab.html`（開發中） | 策略組合送出表單 + 排行榜（預設依 Sharpe 排序、表頭可改依 CAGR 等欄位排序，前端排序不重查 DB） | 由 `layer3_strategy_leaderboard_daily` DAG 產生 |
 
 兩份都是 ECharts 5（CDN）+ 深色主題，資料整包內嵌在 html 裡，不需要後端，
 兩支腳本模式一致，各自的細節：
@@ -124,16 +149,19 @@ flowchart LR
         direction TB
         A["抓指標<br/>(daily DAG)"] --> B["算訊號<br/>dim_triggers"]
         B -.->|手動觸發| C["策略回測<br/>VectorBT"]
+        B -.->|"Dataset 觸發（開發中）"| D["策略組合每日重算"]
     end
     Pipe --> DB[("DuckDB<br/>stock_dashboard")]
     DB --> Dash["benny-stock-dashboard<br/>查 DB → 產 html"]
     Dash --> Pages["GitHub Pages"]
+    Pages -.->|"送出組合（開發中）<br/>Cloudflare Tunnel"| Svc["觸發服務<br/>FastAPI"]
+    Svc -.->|"Airflow REST API"| Pipe
 ```
 
 | repo | 角色 |
 |---|---|
 | `benny-data-infra` | DuckDB volume + schema 初始化 |
-| `benny-data-pipeline` | Airflow：抓指標、算訊號、（手動觸發）跑策略回測 |
+| `benny-data-pipeline` | Airflow：抓指標、算訊號、（手動觸發）跑策略回測；開發中：策略組合 DAG + 觸發服務 |
 | `benny-stock-dashboard`（本 repo） | 查 DuckDB、產靜態 html、GitHub Pages 託管 |
 
 ## 這個 repo 放什麼
@@ -146,12 +174,17 @@ flowchart LR
 - `documents/grilling_notes.md`——指標/訊號 dashboard 的完整設計討論
   紀錄（拍板決定、追問過程），這份 README 只整理現況，設計理由一律看
   這份。
-- `documents/layer3_backtest_proposal.md`——策略回測的規劃/討論紀錄。
+- `documents/layer3_backtest_proposal.md`——策略組合排行榜的開發規格
+  （舊版的寫死策略規劃/討論在 git 歷史 `b681f4d`）。
 - `documents/market_indicators_dashboard_architecture.pdf`——最原始需求
   文件。
 - `.nojekyll`——GitHub Pages 跳過 Jekyll pipeline，純靜態檔案服務。
 
 ## CI/CD
+
+**現況**：全部跑在地端電腦（WSL2 + Docker Desktop），電腦或 Docker 沒開，
+每日 DAG 不會跑、dashboard 不會更新。下面描述的常駐主機 + self-hosted
+runner 是之後正式上線的規劃。
 
 這個 repo 沒有自己的 `deploy.yml`——資料處理邏輯在
 `benny-data-infra`/`benny-data-pipeline` 兩個 repo 裡，各自 push 到
