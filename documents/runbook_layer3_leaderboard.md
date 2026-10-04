@@ -24,7 +24,7 @@
 |---|---|---|
 | `benny-data-infra` | `feature/layer3-leaderboard-schema` | `master` |
 | `benny-data-pipeline` | `feature/layer3-leaderboard` | `master` |
-| `benny-stock-dashboard` | `feature/layer3-leaderboard-docs` | `main` |
+| `benny-stock-dashboard` | `feature/layer3-leaderboard-docs` | `master`（2026-10-04 從 `main` 改名） |
 
 到 GitHub 各 repo 的 Pull requests 頁面，三個都顯示紫色 **Merged** 才往下。
 
@@ -77,7 +77,7 @@ cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
 git checkout master && git pull
 
 cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-stock-dashboard
-git checkout main && git pull
+git checkout master && git pull
 ```
 
 **確認拉到了**（各自應該印出一行）：
@@ -273,7 +273,7 @@ ORDER BY strategy_name, ticker;
 `update_backtest_dashboard` task 會把新的 `backtest_dashboard.html` push
 到 `benny-stock-dashboard`。
 
-1. 到 https://github.com/Benny0624/benny-stock-dashboard/commits/main ，
+1. 到 https://github.com/Benny0624/benny-stock-dashboard/commits/master ，
    最新一筆應該是剛剛 DAG push 的 commit。
 2. 等 1～2 分鐘（GitHub Pages 更新），打開 backtest dashboard 頁面，
    KPI 卡片的 Sharpe/CAGR 要跟 Step 10 一致。
