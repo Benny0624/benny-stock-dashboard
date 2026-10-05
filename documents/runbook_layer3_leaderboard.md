@@ -7,8 +7,9 @@
 
 1. **Schema migration**：在地端 DuckDB 建立策略組合排行榜的兩張新表
    `backtest_strategy_defs`、`backtest_strategy_results`。
-2. **重跑歷史回測**：`engine.py` 年化從 365 天改成 252 個交易日，舊的
-   `backtest_kpis` 數字是高估的，要重跑 `layer3_backtest_etl` 覆寫。
+2. **重算 6 個策略的 KPI**：`engine.py` 年化從 365 天改成 252 個交易日，
+   舊的 `backtest_kpis` 數字是高估的，手動觸發一次 `layer3_backtest_etl`
+   覆寫（觸發一次就好，不用補跑，見 Step 9）。
 
 兩張都是**新表**，不改任何既有表，所以不需要手寫 `ALTER TABLE`；
 `make start` 的 `CREATE TABLE IF NOT EXISTS` 就會建出來。
@@ -211,7 +212,19 @@ make start
 
 ---
 
-## Step 9：重跑歷史回測
+## Step 9：重算 6 個策略的 KPI（觸發一次，不用補跑）
+
+**這步不是補跑歷史資料**：`layer3_backtest_etl` 是 `schedule_interval=None`
+（不排程），沒有「每天一個 run」，也不會 catchup。觸發一次只會產生
+**1 個 DAG run**：
+
+- 6 個 `compute_*` task 各跑一個策略：從 DuckDB 讀出 9/5 已經 backfill 好的
+  10 年 `dim_triggers`/`backtest_universe`，VectorBT 一次算完整段 10 年，
+  `INSERT OR REPLACE` 覆寫 `backtest_kpis` 等表。
+- `update_backtest_dashboard` 產 html、push 一次。
+- 全程**不抓任何新資料**（不打 FRED/yfinance），幾分鐘就跑完。
+
+資料本身沒錯，錯的是 KPI 年化公式；觸發一次就是用新公式把 KPI 重算覆寫。
 
 1. 在 Airflow 網頁找到 `layer3_backtest_etl`，看最左邊的開關：
    **是灰色（暫停）就點一下變藍色**。暫停中的 DAG 觸發了也不會跑。
