@@ -81,7 +81,8 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
 基準一律是「回測起點就買、抱到最後」的 buy & hold，跟策略同一天起算，
 公平比較「進出場」vs「全押抱著」。CAGR/Sharpe/Sortino/Calmar 一律用
 一年 252 個交易日年化（2026-10-03 修正，之前用 365 天，CAGR 跟 Sharpe
-都高估；修正後要重跑 `layer3_backtest_etl` 才會更新到 `backtest_kpis`）。
+都高估；2026-10-07 已重跑 `layer3_backtest_etl`，`backtest_kpis` 跟
+`backtest_dashboard.html` 都是修正後的數字）。
 
 ### 策略組合排行榜（開發中）
 
@@ -100,7 +101,7 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
 
 | 元件 | 位置 | 狀態 |
 |---|---|---|
-| `backtest_strategy_defs`/`backtest_strategy_results` 兩張表 | `benny-data-infra` `sql/stock_dashboard/init_schema.sql` | 已寫，未套用 |
+| `backtest_strategy_defs`/`backtest_strategy_results` 兩張表 | `benny-data-infra` `sql/stock_dashboard/init_schema.sql` | ✅ 已套用到地端 DuckDB（2026-10-07） |
 | `combo_backtest()`、`combo_triggers.py` | `benny-data-pipeline` `backtest/` | 未開始 |
 | `layer3_strategy_combo_backtest` DAG（單一組合）、`layer3_strategy_leaderboard_daily` DAG（每日重算 + push） | `benny-data-pipeline` | 未開始 |
 | 觸發服務 `services/backtest_trigger/` + `cloudflared` | `benny-data-pipeline` | 未開始 |

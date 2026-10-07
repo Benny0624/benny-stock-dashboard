@@ -45,7 +45,7 @@
 - **Q14 年化用交易日數**：`engine.py` 的 `freq="D"` 讓 vectorbt 一年算
   365 列，實際一年約 252 個交易日，Sharpe 高估約 1.2 倍、CAGR 被放大。
   改設 `year_freq='252 days'`，修完重跑現有 6 個策略更新 KPI（方案四
-  Sharpe 0.83 是高估值）。
+  Sharpe 0.83 是高估值；2026-10-07 重跑後為 0.69）。
 - **trigger 清單常數**：`dim_triggers` 沒有欄位標 ENTRY/EXIT/STATE，名稱
   後綴也不統一（`SPX_GOLDEN_CROSS`、`*_BREAKOUT`）。在 `constants/` 新增
   可選 trigger 清單（排除 `*_STATE` 共 9 個，其餘約 22 個，附中文顯示名、
@@ -151,7 +151,9 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 `output/backtest_dashboard.html` 產出並 push。6 個寫死策略（方案一/三×2/
 四/五）已跑通，`benny-data-pipeline` PR #9/#10/#11 與 `benny-data-infra`
 的 Layer 3 schema 都已 merge master。代表結果：方案四（SPX 金叉死叉 vs SPY）
-6 次交易、總報酬 148.13%、Sharpe 0.83、勝率 83.3%。
+6 次交易、總報酬約 147%、勝率 83.3%；Sharpe 原本記錄 0.83 是 365 天年化的
+高估值，2026-10-07 改 252 交易日重算後是 0.69（全部策略修正後 KPI 見
+「實作進度」）。
 
 ## Layer 1/2 Dashboard 優化（2026-09-06 已完成）
 
@@ -238,13 +240,35 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 
 | 步驟 | 狀態 |
 |---|---|
-| 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 已寫，in-memory DuckDB 驗證可重複執行、`combo_key` 去重；**還沒套用到地端 DuckDB** |
-| 2. `engine.py` 年化改 252 交易日 | ✅ 已寫，假資料驗證 CAGR/Sharpe 正確；**還沒重跑 6 個策略更新 `backtest_kpis`** |
-| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | 未開始 |
+| 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 完成：infra PR #4 merge；2026-10-07 照 `runbook_layer3_leaderboard.md` 套用到地端 DuckDB，`stock_dashboard` 共 10 張表 |
+| 2. `engine.py` 年化改 252 交易日 | ✅ 完成：pipeline PR #12 merge；2026-10-07 重跑 `layer3_backtest_etl`，`backtest_kpis` 已是修正後數字（見下表） |
+| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證；順便修 `processed_at` 不會更新的既有 bug | 未開始 |
 | 4. 單一組合 DAG + 觸發服務 | 未開始 |
 | 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 |
 | 6. 前端 `strategy_lab.html` | 未開始 |
 | 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） |
+
+**修正後的 6 個寫死策略 KPI**（2026-10-07，252 交易日年化）：
+
+| 策略 | 標的 | 總報酬 % | CAGR % | Sharpe | 最大回撤 % | 勝率 % | 交易次數 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `extreme_fear_dip_buy_120d` | SPY | 183.90 | 11.03 | 0.93 | -28.32 | 100.0 | 5 |
+| `extreme_fear_dip_buy_60d` | SPY | 95.95 | 6.98 | 0.67 | -28.32 | 80.0 | 5 |
+| `sox_macd_rotation` | SOXX | 710.95 | 23.36 | 0.88 | -40.57 | 66.7 | 6 |
+| `sox_spx_ratio_rotation` | 006208.TW | 623.66 | 22.77 | 1.31 | -27.45 | 100.0 | 4 |
+| `sox_spx_ratio_rotation` | 2330.TW | 1214.63 | 30.64 | 1.30 | -27.63 | 100.0 | 4 |
+| `spx_golden_death_cross` | SPY | 147.30 | 9.50 | 0.69 | -33.72 | 83.3 | 6 |
+
+**已知問題（排進 Step 3 修）**：`processed_at` 不會更新——DuckDB 的
+`INSERT OR REPLACE` 只更新 INSERT 有列出的欄位，`backtest/db_writer.py`
+跟 `etl/duckdb_loader.py` 都沒帶 `processed_at`，覆寫時保留第一次寫入的
+時間（`backtest_kpis` 重算後仍顯示 9/4、9/6）。數值本身正確。
+
+**Q15 待回答**（不擋 Step 3，Step 5 前要定）：排行榜要不要顯示排名變化
+（↑↓/NEW）。(a) 不要，排名產 html 時用 `RANK()` 現算 (b) 要，新增快照表
+`backtest_strategy_rank_history`，每日重算 DAG 寫入當天名次。
+➡️ 建議 (b)。兩案都不在 `backtest_strategy_results` 加 `rank` 欄位（可以
+現算、存了會過期、只對應一種排序）。
 
 Benny 手動待辦：買網域 + Cloudflare Tunnel、產生
 `BACKTEST_TRIGGER_API_TOKEN` 放 `benny-data-pipeline/.env`、手機肉眼確認

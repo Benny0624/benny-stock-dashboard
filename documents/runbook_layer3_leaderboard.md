@@ -1,5 +1,10 @@
 # Runbook：套用 Layer 3 排行榜 schema + 重跑回測（2026-10-04）
 
+> **狀態：2026-10-07 已在地端執行完成。** 驗證結果：`stock_dashboard` 共
+> 10 張表（含兩張新表）；方案四 Sharpe 0.83 → 0.69（= 0.83 × √(252/365)），
+> 修正後 KPI 見 `grilling_notes.md`「實作進度」。之後新增表（例如 Q15 快照表）
+> 可以照 Step 4～7 再跑一次。
+
 照順序一步一步做，每一步都有「做什麼」「打什麼指令」「應該看到什麼」。
 看到的跟寫的不一樣就**停下來**，不要往下做，把畫面貼給 Claude。
 
@@ -7,8 +12,9 @@
 
 1. **Schema migration**：在地端 DuckDB 建立策略組合排行榜的兩張新表
    `backtest_strategy_defs`、`backtest_strategy_results`。
-2. **重跑歷史回測**：`engine.py` 年化從 365 天改成 252 個交易日，舊的
-   `backtest_kpis` 數字是高估的，要重跑 `layer3_backtest_etl` 覆寫。
+2. **重算 6 個策略的 KPI**：`engine.py` 年化從 365 天改成 252 個交易日，
+   舊的 `backtest_kpis` 數字是高估的，手動觸發一次 `layer3_backtest_etl`
+   覆寫（觸發一次就好，不用補跑，見 Step 9）。
 
 兩張都是**新表**，不改任何既有表，所以不需要手寫 `ALTER TABLE`；
 `make start` 的 `CREATE TABLE IF NOT EXISTS` 就會建出來。
@@ -211,7 +217,19 @@ make start
 
 ---
 
-## Step 9：重跑歷史回測
+## Step 9：重算 6 個策略的 KPI（觸發一次，不用補跑）
+
+**這步不是補跑歷史資料**：`layer3_backtest_etl` 是 `schedule_interval=None`
+（不排程），沒有「每天一個 run」，也不會 catchup。觸發一次只會產生
+**1 個 DAG run**：
+
+- 6 個 `compute_*` task 各跑一個策略：從 DuckDB 讀出 9/5 已經 backfill 好的
+  10 年 `dim_triggers`/`backtest_universe`，VectorBT 一次算完整段 10 年，
+  `INSERT OR REPLACE` 覆寫 `backtest_kpis` 等表。
+- `update_backtest_dashboard` 產 html、push 一次。
+- 全程**不抓任何新資料**（不打 FRED/yfinance），幾分鐘就跑完。
+
+資料本身沒錯，錯的是 KPI 年化公式；觸發一次就是用新公式把 KPI 重算覆寫。
 
 1. 在 Airflow 網頁找到 `layer3_backtest_etl`，看最左邊的開關：
    **是灰色（暫停）就點一下變藍色**。暫停中的 DAG 觸發了也不會跑。
@@ -253,7 +271,11 @@ ORDER BY strategy_name, ticker;
 
 **應該看到**：
 
-- `processed_at` 全部是今天。
+- ~~`processed_at` 全部是今天~~（**寫錯了**，2026-10-07 更正）：
+  `processed_at` 會維持第一次寫入的日期（9/4、9/6），不會變成今天。DuckDB
+  的 `INSERT OR REPLACE` 只更新 INSERT 有列出的欄位，`db_writer.py` 沒帶
+  `processed_at`，所以覆寫時保留舊值——這是既有 bug，修正排在開發順序
+  Step 3。判斷有沒有重算請看下面的 sharpe。
 - 每一列的 **sharpe 都比 Step 5 小**，大約是舊值 ÷ 1.2
   （方案四應該從 0.83 左右變成 0.69 左右）。
 - 每一列的 **cagr_pct 也比 Step 5 小**（總報酬不變，年化方式變了）。
