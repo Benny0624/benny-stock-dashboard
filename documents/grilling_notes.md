@@ -29,6 +29,56 @@
   更新就跑，一天最多兩次，DAG 設 `max_active_runs=1` 避免重疊。不用 AND：
   一邊休市沒發 Dataset 事件，另一邊的新資料會延遲上榜。
 
+## 第六輪拍板（2026-10-11，寫入方式 + 價格基準）
+
+- **Q19 條件式 upsert**：`_updated_at` 只在值真的改變時更新。寫入從
+  `INSERT OR REPLACE` 改成 `INSERT ... ON CONFLICT (自然 key) DO UPDATE ...
+  WHERE 值 IS DISTINCT FROM excluded.值`，值沒變的列完全不寫。key 就是各表
+  的 unique index：`bulk_insert()` 從 `duckdb_indexes()` 查（schema 是唯一
+  事實來源），查不到或表沒有 `_updated_at` 就維持 `INSERT OR REPLACE`
+  （fantasy 不受影響）；4 個 SQL template 把 key 寫死在各自 SQL。值欄位 =
+  全部欄位 − key − `processed_at` − `_updated_at`。背景：每日 DAG 會重寫
+  raw 最近 5 天、silver/dim_triggers 整段歷史，大部分是值沒變的重寫。在地端
+  DuckDB 副本驗證：silver 10.5 萬列、dim_triggers 2.3 萬列重算兩次都寫入
+  0 列；資料表**不會**因重疊回補多出重複列（unique key 覆寫同一列）。
+- **Q20 價格基準分兩種**：`raw_stock` 改存**未還原**收盤價（`fetch.py`
+  `_fetch_yfinance` 加 `auto_adjust=False`），歷史價格之後不會被除息改寫；
+  `backtest_universe` 維持**還原權值價**，回測是含息總報酬，除息時整段重抓
+  （proposal 3.3 節，跟 Step 5 `fetch_backtest_universe` 一起做）。原因：
+  yfinance 預設的還原價每次除息都回頭改寫全部歷史，但每日 DAG 只重抓 5 天，
+  存下來的序列會混用不同還原基準。指數不配息不受影響，會變的是 `2330.TW`
+  （raw）與 SPY/SOXX/2330.TW/006208.TW（回測標的）。**UI 加說明**：
+  `dashboard.html` 台積電說明註明未還原價、除息跳空的原因；
+  `backtest_dashboard.html` 副標題註明回測用還原權值價、含息總報酬、252
+  交易日年化。既有 raw 的 2330.TW 歷史是還原價，要照 runbook Part 2 用
+  backfill 重抓一次。
+
+## 第五輪拍板（2026-10-07，時間欄位）
+
+- **Q16 欄位名 `_updated_at`**：系統最後更新時間。`_` 開頭表示系統欄位；
+  不叫 `updated_at` 是因為那個名字已經是各表的業務日期（`DATE`）。
+  `processed_at` 維持「第一次寫入時間」，覆寫時刻意不動（先前把它當成
+  bug 是 Claude 誤判，已更正）。
+- **Q17 範圍**：所有會被 `INSERT OR REPLACE` 覆寫的表都加——`raw_stock`、
+  `silver_stock`、`dim_triggers`、`backtest_universe`、`backtest_runs`、
+  `backtest_equity_curve`、`backtest_trades`、`backtest_kpis`、
+  `backtest_strategy_results`。`backtest_strategy_defs`（`INSERT OR IGNORE`，
+  寫入後不改）不加。
+- **Q18 既有資料補值**：`_updated_at = processed_at`。10/7 重算的 6 個策略
+  實際最後更新是 10/7，但這個資訊已經無法還原，下次重算才會正確。
+- **實作**：infra `init_schema.sql` 的 CREATE TABLE 加欄位 + 尾端可重複
+  執行的 migration（`ADD COLUMN IF NOT EXISTS` → 只補 NULL 的 `UPDATE` →
+  `SET DEFAULT`；DuckDB 不允許對有 unique index 的表 `SET NOT NULL`，遷移的
+  欄位沒有 NOT NULL）。pipeline `bulk_insert()` 遇到有 `_updated_at` 的表
+  自動帶 `current_timestamp`；4 個 SQL template 改成寫明欄位清單、帶
+  `_updated_at`、不帶 `processed_at`。副作用：`silver_stock`/`dim_triggers`
+  的 `processed_at` 以前每次重算都被覆寫成最新時間，之後改成第一次寫入
+  時間（符合 Q16 定義），既有資料的 `processed_at` 保持現值。
+- **上線順序**：infra 跟 pipeline 兩個 PR 要一起 merge、Airflow 停著時一起
+  套用——只套 schema 不更新 template，舊的「不列欄位 `INSERT ... SELECT`」
+  會因欄位數不符失敗；只更新 template 不套 schema，會找不到 `_updated_at`。
+  步驟見 `runbook_layer3_leaderboard.md` Part 2。
+
 ## 第四輪拍板（2026-10-03，對照實際程式碼盤點）
 
 - **Q12 交易標的價格每日更新**：`backtest_universe` 原本只靠一次性
@@ -100,9 +150,10 @@ dashboard html、推上 GitHub Pages。
   歷史版本）。
 - **DuckDB schema**：單一 schema `stock_dashboard`，`raw_stock`/
   `silver_stock` 用 `market` 欄位（'tw'/'us'）區分國家，不按國家拆 schema。
-  `updated_at` 型別 `DATE`（無 intraday 意義）、`processed_at` 型別
-  `TIMESTAMP`（Airflow 實際執行時間）。無 FK constraint（配合每天整表
-  重算）。
+  `updated_at` 型別 `DATE`（業務日期，無 intraday 意義）、`processed_at`
+  型別 `TIMESTAMP`（**第一次寫入**時間，覆寫時保留）、`_updated_at` 型別
+  `TIMESTAMP`（**系統最後更新**時間，每次寫入都更新，2026-10-07 加，見
+  Q16~18）。無 FK constraint（配合每天整表重算）。
 - **Airflow**：兩個獨立 DAG（`us_market_daily_etl`/`tw_market_daily_etl`，
   排程時間對不上故拆開），task chain `fetch_raw → load_raw →
 [compute_ma_rsi, compute_ratios] → update_dashboard`，全掛
@@ -242,7 +293,8 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 |---|---|
 | 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 完成：infra PR #4 merge；2026-10-07 照 `runbook_layer3_leaderboard.md` 套用到地端 DuckDB，`stock_dashboard` 共 10 張表 |
 | 2. `engine.py` 年化改 252 交易日 | ✅ 完成：pipeline PR #12 merge；2026-10-07 重跑 `layer3_backtest_etl`，`backtest_kpis` 已是修正後數字（見下表） |
-| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證；順便修 `processed_at` 不會更新的既有 bug | 未開始 |
+| 2.5 系統欄位 `_updated_at` + 條件式 upsert + raw 改未還原價（Q16~20） | 程式已寫並在地端 DuckDB 副本驗證：三個 repo 分支 `feature/system-updated-at`；**待 merge 後照 runbook Part 2 套用** |
+| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | 未開始 |
 | 4. 單一組合 DAG + 觸發服務 | 未開始 |
 | 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 |
 | 6. 前端 `strategy_lab.html` | 未開始 |
@@ -259,10 +311,9 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 | `sox_spx_ratio_rotation` | 2330.TW | 1214.63 | 30.64 | 1.30 | -27.63 | 100.0 | 4 |
 | `spx_golden_death_cross` | SPY | 147.30 | 9.50 | 0.69 | -33.72 | 83.3 | 6 |
 
-**已知問題（排進 Step 3 修）**：`processed_at` 不會更新——DuckDB 的
-`INSERT OR REPLACE` 只更新 INSERT 有列出的欄位，`backtest/db_writer.py`
-跟 `etl/duckdb_loader.py` 都沒帶 `processed_at`，覆寫時保留第一次寫入的
-時間（`backtest_kpis` 重算後仍顯示 9/4、9/6）。數值本身正確。
+**時間欄位（Q16~18，2026-10-07 拍板）**：重算後 `backtest_kpis` 的
+`processed_at` 仍是 9/4、9/6——這是對的，`processed_at` 定義就是第一次
+寫入時間。最後更新時間另開系統欄位 `_updated_at` 記錄（2.5 步）。
 
 **Q15 待回答**（不擋 Step 3，Step 5 前要定）：排行榜要不要顯示排名變化
 （↑↓/NEW）。(a) 不要，排名產 html 時用 `RANK()` 現算 (b) 要，新增快照表

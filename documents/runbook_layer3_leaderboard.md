@@ -272,10 +272,10 @@ ORDER BY strategy_name, ticker;
 **應該看到**：
 
 - ~~`processed_at` 全部是今天~~（**寫錯了**，2026-10-07 更正）：
-  `processed_at` 會維持第一次寫入的日期（9/4、9/6），不會變成今天。DuckDB
-  的 `INSERT OR REPLACE` 只更新 INSERT 有列出的欄位，`db_writer.py` 沒帶
-  `processed_at`，所以覆寫時保留舊值——這是既有 bug，修正排在開發順序
-  Step 3。判斷有沒有重算請看下面的 sharpe。
+  `processed_at` 會維持第一次寫入的日期（9/4、9/6），不會變成今天——
+  `processed_at` 的定義就是第一次寫入時間，覆寫時刻意保留。最後更新時間
+  之後看 `_updated_at`（Part 2 加的系統欄位）。判斷有沒有重算請看下面的
+  sharpe。
 - 每一列的 **sharpe 都比 Step 5 小**，大約是舊值 ÷ 1.2
   （方案四應該從 0.83 左右變成 0.69 左右）。
 - 每一列的 **cagr_pct 也比 Step 5 小**（總報酬不變，年化方式變了）。
@@ -332,3 +332,217 @@ make start
 
 這會把 DuckDB 整個蓋回 Step 4 備份時的樣子（Step 4 之後寫進去的資料都會
 消失，包括這段期間每日 DAG 抓的新資料，之後重跑每日 DAG 就會補回來）。
+
+---
+
+# Part 2：加系統欄位 `_updated_at`（2026-10-07 起，**還沒執行**）
+
+設計見 `grilling_notes.md`「第五輪拍板」Q16~18、「第六輪拍板」Q19~20。
+這次跟 Part 1 不一樣：**會改到既有的表**（9 張表各加一欄 `_updated_at`、
+寫入改成條件式 upsert、`raw_stock` 改存未還原價），而且 **infra 跟 pipeline
+一定要一起上線**——只做一邊，每日 DAG 就會壞掉。所以全程 Airflow 要停著。
+
+## P2-0：兩個 PR 都 merge
+
+| repo | 分支 | 合進 |
+|---|---|---|
+| `benny-data-infra` | `feature/system-updated-at` | `master` |
+| `benny-data-pipeline` | `feature/system-updated-at` | `master` |
+| `benny-stock-dashboard` | `feature/system-updated-at` | `master` |
+
+**infra、pipeline 兩個都 Merged 才往下**（dashboard 那個只是 UI 說明文字跟
+文件，晚點 merge 不影響）。只 merge 一個就停在這，不要開 Airflow。
+
+## P2-1：開 Docker Desktop，關 Airflow
+
+跟 Part 1 的 Step 1～2 一樣：開 Docker Desktop 等 **Engine running**，進 WSL：
+
+```bash
+wsl -d Ubuntu-22.04
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make down
+docker ps --format "{{.Names}}"
+```
+
+**應該看到**：沒有 `benny-data-pipeline-` 開頭的名字。
+
+## P2-2：拉最新程式碼並確認
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-infra
+git checkout master && git pull
+grep -c "ADD COLUMN IF NOT EXISTS _updated_at" sql/stock_dashboard/init_schema.sql
+# 應該印出 9
+
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+git checkout master && git pull
+grep -c "AS _updated_at" dags/stock_dashboard_etl/templates/compute_triggers.sql
+# 應該印出 29
+grep -c "ON CONFLICT" dags/stock_dashboard_etl/templates/compute_triggers.sql
+# 應該印出 1
+grep -c "auto_adjust=False" dags/stock_dashboard_etl/etl/fetch.py
+# 應該印出 1
+```
+
+任何一個印出 `0` = 那個 repo 沒拉到，回 P2-0。
+
+## P2-3：備份
+
+```bash
+mkdir -p ~/duckdb-backup && cd ~/duckdb-backup
+docker run --rm \
+  -v benny-infra-duckdb-data:/data \
+  -v "$PWD":/backup \
+  alpine tar czf /backup/warehouse-before-updated-at.tgz -C /data .
+ls -lh ~/duckdb-backup
+```
+
+**應該看到**：`warehouse-before-updated-at.tgz`，大小不是 0。
+
+## P2-4：套用 migration
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-infra
+make start
+```
+
+**應該看到**：`[OK] Schema initialized at /data/warehouse.duckdb`。
+
+## P2-5：確認欄位加上了、舊資料有補值
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make duckdb-shell
+```
+
+貼上：
+
+```sql
+SELECT table_name
+FROM information_schema.columns
+WHERE table_schema = 'stock_dashboard' AND column_name = '_updated_at'
+ORDER BY table_name;
+```
+
+**應該看到 9 張表**（除了 `backtest_strategy_defs` 以外全部）。再貼：
+
+```sql
+SELECT count(*) AS null_rows FROM stock_dashboard.silver_stock WHERE _updated_at IS NULL;
+-- 應該是 0
+
+SELECT max(processed_at) AS processed_at_max, max(_updated_at) AS updated_max
+FROM stock_dashboard.silver_stock;
+-- 兩個值應該一樣（舊資料補成 processed_at）。把 processed_at_max 記下來
+```
+
+離開：`.exit`
+
+## P2-6：開 Airflow，跑一次每日 DAG
+
+```bash
+make start
+```
+
+到 http://localhost:8080 確認沒有紅色 Broken DAG，`us_market_daily_etl` 開關
+是藍色（沒暫停）。然後：
+
+```bash
+make trigger dag=us_market_daily_etl
+```
+
+在網頁上等這次 run 全部變深綠色。**有紅色的**：點進去看 Logs，貼給 Claude。
+最常見的錯誤是 `table ... has 8 columns but 7 values were supplied`——表示
+pipeline 沒拉到新的 template，回 P2-2。
+
+這個 DAG 會照常抓資料、更新 dashboard 並 push，跟平常每天跑的一樣。
+
+## P2-7：確認寫入行為正確
+
+**等 P2-6 全部綠色**再開：
+
+```bash
+make duckdb-shell
+```
+
+```sql
+SELECT max(processed_at) AS processed_at_max, max(_updated_at) AS updated_max
+FROM stock_dashboard.silver_stock;
+```
+
+**應該看到**：
+
+- `updated_max` 是**今天**——今天有新交易日的資料寫進來（新列）。
+- `processed_at_max` 跟 P2-5 記下的值**一樣**，或只多了今天新抓的那幾天
+  的資料（新資料第一次寫入）。**不應該**整張表的 `processed_at` 都變今天。
+
+再貼這句，看今天實際被寫的列有多少：
+
+```sql
+SELECT count(*) AS written_today
+FROM stock_dashboard.silver_stock
+WHERE _updated_at::DATE = current_date;
+```
+
+**應該看到**：幾十到幾百列（新交易日的 MA/RSI，加上少數因新資料而改變
+的值），**不是**十萬列。十萬列 = 條件式 upsert 沒生效，回 P2-2 確認
+`ON CONFLICT` 那行。
+
+離開：`.exit`。
+
+## P2-8：raw 的台積電改成未還原價（重抓歷史）
+
+`raw_stock` 裡 `2330.TW` 的舊資料是 yfinance 的還原權值價，新程式改抓未還原
+價（Q20）。要用 backfill 把 10 年歷史重抓一次，新舊才會是同一種價格。指數
+（SPX、VIX…）不配息，重抓的值一樣，條件式 upsert 不會寫它們。
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make shell
+```
+
+進到 container 的 bash 後：
+
+```bash
+BACKFILL_YEARS=10 python dags/scripts/backfill_stock_dashboard.py
+exit
+```
+
+**應該看到**：`[us] fetching ...`、`[tw] fetching ...` 等訊息，沒有
+Traceback。大約幾分鐘（要打 FRED/yfinance）。
+
+確認只有台積電被改：
+
+```bash
+make duckdb-shell
+```
+
+```sql
+SELECT market, index_id, index_name, count(*) AS rows_changed_today
+FROM stock_dashboard.raw_stock
+WHERE _updated_at::DATE = current_date
+GROUP BY ALL
+ORDER BY rows_changed_today DESC;
+```
+
+**應該看到**：`index_id = 11`（台積電）有上千列（10 年內除息日以前的價格
+都變了），其他指標是 0 或只有最近幾天。離開：`.exit`。
+
+下一次 `tw_market_daily_etl` 跑完，台積電的 MA/RSI 會用新的價格重算。
+做完告訴 Claude「Part 2 跑完了」。
+
+## Part 2 出事怎麼還原
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make down
+
+cd ~/duckdb-backup
+docker run --rm \
+  -v benny-infra-duckdb-data:/data \
+  -v "$PWD":/backup \
+  alpine sh -c "rm -rf /data/* && tar xzf /backup/warehouse-before-updated-at.tgz -C /data"
+```
+
+**還原 DB 之後，兩個 repo 的程式也要退回舊版**才能開 Airflow（新 template
+會找不到 `_updated_at` 欄位）：到 GitHub 對兩個 PR 按 **Revert**，merge
+revert PR，再 `git pull`，最後 `make start`。

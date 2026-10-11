@@ -141,6 +141,44 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
   策略時兩邊都要記得改）。
 - Equity Curve/Underwater/價格圖都有 `dataZoom`，也有響應式版面。
 
+## DuckDB 資料表（schema `stock_dashboard`）
+
+DDL 的唯一事實來源是 `benny-data-infra/sql/stock_dashboard/init_schema.sql`
+（欄位註解、設計理由都在那）；這裡是給人查的總表。**改了表結構，這張表要
+跟著改。**
+
+### 共用慣例
+
+- **時間欄位**（2026-10-07 起）：
+  - `updated_at`（`DATE`）= 業務日期（交易日 / 訊號日），是自然 key 的一部分。
+  - `processed_at`（`TIMESTAMP`）= **第一次寫入**時間，之後覆寫不會變。
+  - `_updated_at`（`TIMESTAMP`）= **值最後一次真的改變**的時間。寫入走
+    「條件式 upsert」：key 撞到時值沒變就不寫，`_updated_at` 也不動。
+- **寫入方式**：每張表都有一條 unique index 當自然 key，重跑同一筆就覆寫，
+  不留歷史版本；不宣告 FK constraint。
+- **價格基準**（Q20）：`raw_stock` 存**未還原**的實際收盤價（指數不配息，
+  只影響 `2330.TW` 這類個股）；`backtest_universe` 存**還原權值價**，回測
+  報酬是含息總報酬。兩份 dashboard 頁面上都有對應的說明文字。
+
+### 表一覽
+
+| 表 | 層 | 一列代表 | 自然 key（unique index） | 主要欄位 | 誰寫 | 誰讀 |
+|---|---|---|---|---|---|---|
+| `raw_stock` | Layer 1 | 一個指標一天的原始值 | `market, index_id, updated_at` | `index_name`、`index_value`（收盤價 / 殖利率 / VIX，未還原） | 每日 DAG `fetch_raw` 抓最近 5 天；`backfill_stock_dashboard.py` | `build_dashboard.py`；silver 計算 |
+| `silver_stock` | Layer 2 | 一個指標一天的一種衍生值 | `market, index_id, agg_type, updated_at` | `agg_type`（`RAW` 合成比值 / `MA50` / `MA200` / `RSI14`）、`agg_value` | 每日 DAG 3 個 SQL template（每次整段重算，值沒變的列不寫） | `build_dashboard.py`；trigger 計算 |
+| `dim_triggers` | Layer 2 | 一個訊號一天的事件 / 狀態 | `market, index_id, trigger_type, updated_at` | `trigger_type`（`*_STATE` 每天一筆；`*_ENTER`/`*_EXIT`/金叉死叉等只在發生當天）、`trigger_value` | 每日 DAG `compute_triggers.sql` + SOX 月線 MACD task | `build_dashboard.py`、`build_backtest_dashboard.py`；回測引擎 |
+| `backtest_universe` | Layer 3 | 一檔交易標的一天的收盤價 | `ticker, updated_at` | `ticker_name`、`market`、`close_price`（還原權值價） | `backfill_backtest_universe.py`（一次性）；開發中：每日 `fetch_backtest_universe` | 回測引擎、`build_backtest_dashboard.py` |
+| `backtest_runs` | Layer 3 | 一個寫死策略 × 標的的回測 metadata | `strategy_name, ticker` | `benchmark_ticker`、`start_date`、`end_date` | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
+| `backtest_equity_curve` | Layer 3 | 寫死策略 × 標的一天的淨值 | `strategy_name, ticker, updated_at` | `strategy_value`、`benchmark_value`、`drawdown_pct` | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
+| `backtest_trades` | Layer 3 | 寫死策略 × 標的的一筆交易 | `strategy_name, ticker, trade_seq` | 進出場日期 / 價格、`return_pct`、`holding_days` | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
+| `backtest_kpis` | Layer 3 | 寫死策略 × 標的的彙總 KPI | `strategy_name, ticker` | 總報酬、CAGR、Sharpe、Sortino、最大回撤、勝率、交易次數、Alpha/Beta…（年化用 252 交易日） | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
+| `backtest_strategy_defs` | Layer 3 排行榜 | 一個使用者自組的策略組合 | `strategy_def_id`（sequence）；`combo_key` 也是 unique | 進場 / 出場 `trigger_type` 陣列、AND/OR、出場模式、固定持有天數、`ticker`、`created_at` | 開發中：觸發服務（`INSERT OR IGNORE`，寫入後不改，沒有 `processed_at`/`_updated_at`） | 開發中：組合 DAG、排行榜 |
+| `backtest_strategy_results` | Layer 3 排行榜 | 一個策略組合的 KPI | `strategy_def_id` | 欄位同 `backtest_kpis` | 開發中：單一組合 DAG、每日重算 DAG | 開發中：`strategy_lab.html` |
+
+各表筆數（2026-10-08 地端）：`raw_stock` 27,507、`silver_stock` 105,436、
+`dim_triggers` 23,593、`backtest_universe` 9,886、`backtest_equity_curve`
+14,914，其他都是個位到兩位數；整顆 DuckDB 約 15.5 MB。
+
 ## 架構
 
 ```mermaid
