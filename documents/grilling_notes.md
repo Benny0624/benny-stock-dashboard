@@ -289,16 +289,16 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 `benny-data-infra` `feature/layer3-leaderboard-schema`、`benny-data-pipeline`
 `feature/layer3-leaderboard`、本 repo `feature/layer3-leaderboard-docs`。
 
-| 步驟 | 狀態 |
-|---|---|
-| 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 完成：infra PR #4 merge；2026-10-07 照 `runbook_layer3_leaderboard.md` 套用到地端 DuckDB，`stock_dashboard` 共 10 張表 |
-| 2. `engine.py` 年化改 252 交易日 | ✅ 完成：pipeline PR #12 merge；2026-10-07 重跑 `layer3_backtest_etl`，`backtest_kpis` 已是修正後數字（見下表） |
-| 2.5 系統欄位 `_updated_at` + 條件式 upsert + raw 改未還原價（Q16~20） | 程式已寫並在地端 DuckDB 副本驗證：三個 repo 分支 `feature/system-updated-at`；**待 merge 後照 runbook Part 2 套用** |
-| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | 未開始 |
-| 4. 單一組合 DAG + 觸發服務 | 未開始 |
-| 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 |
-| 6. 前端 `strategy_lab.html` | 未開始 |
-| 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） |
+| 步驟 | 狀態 | 做完要回補 / 重算嗎 |
+|---|---|---|
+| 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 完成：infra PR #4 merge；2026-10-07 照 `runbook_layer3_leaderboard.md` 套用到地端 DuckDB，`stock_dashboard` 共 10 張表 | 不用（新表，空的） |
+| 2. `engine.py` 年化改 252 交易日 | ✅ 完成：pipeline PR #12 merge；2026-10-07 重跑 `layer3_backtest_etl`，`backtest_kpis` 已是修正後數字（見下表） | ✅ 已重算（觸發 `layer3_backtest_etl`） |
+| 2.5 系統欄位 `_updated_at` + 條件式 upsert + raw 改未還原價（Q16~20） | PR merge（infra #6、pipeline #14、dashboard #7）；**還沒照 runbook Part 2 套用到地端** | ⚠️ **要**：`backfill_stock_dashboard.py`（`BACKFILL_YEARS=10`）重抓 raw，台積電改未還原價（runbook P2-8） |
+| 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | 進行中（2026-10-11 開工） | 不用：只加程式，反向驗證讀既有資料 |
+| 4. 單一組合 DAG + 觸發服務 | 未開始 | 不用：組合是使用者送出時才算 |
+| 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 | ⚠️ **要**：`backfill_backtest_universe.py` 跑一次——`backtest_universe` 停在 9/6 的回補，每日 fetch 只抓最近幾天補不到中間的缺口，而且要讓整段歷史換成同一個還原基準（Q20）。若 Q15 選做排名快照表：不用回補，排名歷史從第一天重算開始累積 |
+| 6. 前端 `strategy_lab.html` | 未開始 | 不用 |
+| 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） | 不用 |
 
 **修正後的 6 個寫死策略 KPI**（2026-10-07，252 交易日年化）：
 
