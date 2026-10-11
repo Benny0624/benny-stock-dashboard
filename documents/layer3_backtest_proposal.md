@@ -184,6 +184,12 @@ benchmark 沿用現有 `engine.py` 的「同一檔標的 buy & hold」，alpha/b
   標的（us：SPY/SOXX；tw：2330.TW/006208.TW），沿用 `fetch.py` 既有的抓取
   函式，掛 `pool="duckdb_writer"`。標的照既有慣例放同一張表、用 `market`
   欄位分台美。
+- **除息要整段重抓（Q20）**：`backtest_universe` 存還原權值價（回測要含息
+  總報酬），yfinance 每次除息都會回頭改寫除息日以前的全部歷史。
+  `fetch_backtest_universe` 每天抓最近窗口時一起看 yfinance 的 `Dividends`
+  欄：窗口內**有任何一天 > 0**，就把該標的從最早日期到今天整段重抓、覆寫；
+  沒有就只寫窗口。條件式 upsert 會讓實際被改到的列 `_updated_at` 變成當天，
+  可以拿來確認重抓有生效。4 檔標的各打一次 API，成本很低。
 - **觸發方式**：Airflow Dataset 排程（data-aware scheduling），不用 cron、
   不用 `TriggerDagRunOperator`。`us_market_daily_etl`/`tw_market_daily_etl`
   在 Layer 2（含 `dim_triggers`）與 `fetch_backtest_universe` 都寫完後，

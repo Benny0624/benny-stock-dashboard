@@ -324,7 +324,7 @@ HTML_TEMPLATE = """<!doctype html>
 </head>
 <body>
 <h1>Layer 3 回測結果</h1>
-<div class="subtitle">拿 dim_triggers 轉折訊號當買賣訊號，用 VectorBT 回測的結果——策略 vs 基準（buy &amp; hold）績效比較</div>
+<div class="subtitle">拿 dim_triggers 轉折訊號當買賣訊號，用 VectorBT 回測的結果——策略 vs 基準（buy &amp; hold）績效比較。交易標的價格用還原權值價（配息已還原），報酬是含息總報酬，所以價格圖跟券商看到的實際成交價會有落差；CAGR/Sharpe 以一年 252 個交易日年化。</div>
 
 <div id="filters">
   <div class="filter-block">

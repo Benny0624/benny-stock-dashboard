@@ -337,9 +337,10 @@ make start
 
 # Part 2：加系統欄位 `_updated_at`（2026-10-07 起，**還沒執行**）
 
-設計見 `grilling_notes.md`「第五輪拍板」Q16~18。這次跟 Part 1 不一樣：
-**會改到既有的表**（9 張表各加一欄），而且 **infra 跟 pipeline 一定要一起
-上線**——只做一邊，每日 DAG 就會壞掉。所以全程 Airflow 要停著。
+設計見 `grilling_notes.md`「第五輪拍板」Q16~18、「第六輪拍板」Q19~20。
+這次跟 Part 1 不一樣：**會改到既有的表**（9 張表各加一欄 `_updated_at`、
+寫入改成條件式 upsert、`raw_stock` 改存未還原價），而且 **infra 跟 pipeline
+一定要一起上線**——只做一邊，每日 DAG 就會壞掉。所以全程 Airflow 要停著。
 
 ## P2-0：兩個 PR 都 merge
 
@@ -347,8 +348,10 @@ make start
 |---|---|---|
 | `benny-data-infra` | `feature/system-updated-at` | `master` |
 | `benny-data-pipeline` | `feature/system-updated-at` | `master` |
+| `benny-stock-dashboard` | `feature/system-updated-at` | `master` |
 
-**兩個都 Merged 才往下**。只 merge 一個就停在這，不要開 Airflow。
+**infra、pipeline 兩個都 Merged 才往下**（dashboard 那個只是 UI 說明文字跟
+文件，晚點 merge 不影響）。只 merge 一個就停在這，不要開 Airflow。
 
 ## P2-1：開 Docker Desktop，關 Airflow
 
@@ -375,6 +378,10 @@ cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
 git checkout master && git pull
 grep -c "AS _updated_at" dags/stock_dashboard_etl/templates/compute_triggers.sql
 # 應該印出 29
+grep -c "ON CONFLICT" dags/stock_dashboard_etl/templates/compute_triggers.sql
+# 應該印出 1
+grep -c "auto_adjust=False" dags/stock_dashboard_etl/etl/fetch.py
+# 應該印出 1
 ```
 
 任何一個印出 `0` = 那個 repo 沒拉到，回 P2-0。
@@ -464,11 +471,64 @@ FROM stock_dashboard.silver_stock;
 
 **應該看到**：
 
-- `updated_max` 是**今天**（每次寫入都更新）。
+- `updated_max` 是**今天**——今天有新交易日的資料寫進來（新列）。
 - `processed_at_max` 跟 P2-5 記下的值**一樣**，或只多了今天新抓的那幾天
   的資料（新資料第一次寫入）。**不應該**整張表的 `processed_at` 都變今天。
 
-離開：`.exit`。做完告訴 Claude「Part 2 跑完了」。
+再貼這句，看今天實際被寫的列有多少：
+
+```sql
+SELECT count(*) AS written_today
+FROM stock_dashboard.silver_stock
+WHERE _updated_at::DATE = current_date;
+```
+
+**應該看到**：幾十到幾百列（新交易日的 MA/RSI，加上少數因新資料而改變
+的值），**不是**十萬列。十萬列 = 條件式 upsert 沒生效，回 P2-2 確認
+`ON CONFLICT` 那行。
+
+離開：`.exit`。
+
+## P2-8：raw 的台積電改成未還原價（重抓歷史）
+
+`raw_stock` 裡 `2330.TW` 的舊資料是 yfinance 的還原權值價，新程式改抓未還原
+價（Q20）。要用 backfill 把 10 年歷史重抓一次，新舊才會是同一種價格。指數
+（SPX、VIX…）不配息，重抓的值一樣，條件式 upsert 不會寫它們。
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make shell
+```
+
+進到 container 的 bash 後：
+
+```bash
+BACKFILL_YEARS=10 python dags/scripts/backfill_stock_dashboard.py
+exit
+```
+
+**應該看到**：`[us] fetching ...`、`[tw] fetching ...` 等訊息，沒有
+Traceback。大約幾分鐘（要打 FRED/yfinance）。
+
+確認只有台積電被改：
+
+```bash
+make duckdb-shell
+```
+
+```sql
+SELECT market, index_id, index_name, count(*) AS rows_changed_today
+FROM stock_dashboard.raw_stock
+WHERE _updated_at::DATE = current_date
+GROUP BY ALL
+ORDER BY rows_changed_today DESC;
+```
+
+**應該看到**：`index_id = 11`（台積電）有上千列（10 年內除息日以前的價格
+都變了），其他指標是 0 或只有最近幾天。離開：`.exit`。
+
+下一次 `tw_market_daily_etl` 跑完，台積電的 MA/RSI 會用新的價格重算。
+做完告訴 Claude「Part 2 跑完了」。
 
 ## Part 2 出事怎麼還原
 

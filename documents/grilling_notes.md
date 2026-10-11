@@ -29,6 +29,30 @@
   更新就跑，一天最多兩次，DAG 設 `max_active_runs=1` 避免重疊。不用 AND：
   一邊休市沒發 Dataset 事件，另一邊的新資料會延遲上榜。
 
+## 第六輪拍板（2026-10-11，寫入方式 + 價格基準）
+
+- **Q19 條件式 upsert**：`_updated_at` 只在值真的改變時更新。寫入從
+  `INSERT OR REPLACE` 改成 `INSERT ... ON CONFLICT (自然 key) DO UPDATE ...
+  WHERE 值 IS DISTINCT FROM excluded.值`，值沒變的列完全不寫。key 就是各表
+  的 unique index：`bulk_insert()` 從 `duckdb_indexes()` 查（schema 是唯一
+  事實來源），查不到或表沒有 `_updated_at` 就維持 `INSERT OR REPLACE`
+  （fantasy 不受影響）；4 個 SQL template 把 key 寫死在各自 SQL。值欄位 =
+  全部欄位 − key − `processed_at` − `_updated_at`。背景：每日 DAG 會重寫
+  raw 最近 5 天、silver/dim_triggers 整段歷史，大部分是值沒變的重寫。在地端
+  DuckDB 副本驗證：silver 10.5 萬列、dim_triggers 2.3 萬列重算兩次都寫入
+  0 列；資料表**不會**因重疊回補多出重複列（unique key 覆寫同一列）。
+- **Q20 價格基準分兩種**：`raw_stock` 改存**未還原**收盤價（`fetch.py`
+  `_fetch_yfinance` 加 `auto_adjust=False`），歷史價格之後不會被除息改寫；
+  `backtest_universe` 維持**還原權值價**，回測是含息總報酬，除息時整段重抓
+  （proposal 3.3 節，跟 Step 5 `fetch_backtest_universe` 一起做）。原因：
+  yfinance 預設的還原價每次除息都回頭改寫全部歷史，但每日 DAG 只重抓 5 天，
+  存下來的序列會混用不同還原基準。指數不配息不受影響，會變的是 `2330.TW`
+  （raw）與 SPY/SOXX/2330.TW/006208.TW（回測標的）。**UI 加說明**：
+  `dashboard.html` 台積電說明註明未還原價、除息跳空的原因；
+  `backtest_dashboard.html` 副標題註明回測用還原權值價、含息總報酬、252
+  交易日年化。既有 raw 的 2330.TW 歷史是還原價，要照 runbook Part 2 用
+  backfill 重抓一次。
+
 ## 第五輪拍板（2026-10-07，時間欄位）
 
 - **Q16 欄位名 `_updated_at`**：系統最後更新時間。`_` 開頭表示系統欄位；
@@ -269,7 +293,7 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 |---|---|
 | 1. schema：`backtest_strategy_defs`/`backtest_strategy_results` | ✅ 完成：infra PR #4 merge；2026-10-07 照 `runbook_layer3_leaderboard.md` 套用到地端 DuckDB，`stock_dashboard` 共 10 張表 |
 | 2. `engine.py` 年化改 252 交易日 | ✅ 完成：pipeline PR #12 merge；2026-10-07 重跑 `layer3_backtest_etl`，`backtest_kpis` 已是修正後數字（見下表） |
-| 2.5 系統欄位 `_updated_at`（Q16~18） | 程式已寫並在地端 DuckDB 副本驗證：infra/pipeline 分支 `feature/system-updated-at`；**待 merge 後照 runbook Part 2 套用** |
+| 2.5 系統欄位 `_updated_at` + 條件式 upsert + raw 改未還原價（Q16~20） | 程式已寫並在地端 DuckDB 副本驗證：三個 repo 分支 `feature/system-updated-at`；**待 merge 後照 runbook Part 2 套用** |
 | 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | 未開始 |
 | 4. 單一組合 DAG + 觸發服務 | 未開始 |
 | 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 |
