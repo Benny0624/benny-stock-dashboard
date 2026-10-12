@@ -29,6 +29,24 @@
   更新就跑，一天最多兩次，DAG 設 `max_active_runs=1` 避免重疊。不用 AND：
   一邊休市沒發 Dataset 事件，另一邊的新資料會延遲上榜。
 
+## Step 4 實作時跟規格不同的地方（2026-10-13）
+
+- **檔案位置**：組合的檢查/正規化/`combo_key()` 放在
+  `stock_dashboard_etl/combo_def.py`，不是 `engine.py`/`combo.py`——觸發服務只
+  需要這些，放在不依賴 vectorbt 的模組，服務啟動才不用把回測引擎整包載入。
+  defs/results 兩張表的 SQL 放 `combo_store.py`，服務跟 DAG 共用。
+- **多一個 `GET /api/backtest/options`**（不用 token）：回傳 22 個可選 trigger
+  （含中文名）跟可交易標的。前端表單的選項從這裡拿，pipeline 的 constants 維持
+  唯一事實來源，dashboard repo 不用另外抄一份。
+- **Airflow 沒開時回 502**：組合定義已經存進去了，每日重算會補算，所以訊息是
+  「已記錄，稍後會算」，不是單純失敗。
+- **鎖重試的判斷**：開 DuckDB 時遇到任何 IOException 都重試（Linux/Windows 的
+  鎖檔錯誤訊息不同，不比對訊息），5 次共約 6 秒，仍失敗回 503。
+- **所有 service 共用同一個 image**：實作時發現 `airflow-cli`（`make shell`/
+  `make trigger` 用的）image 是 7 週前的、沒有 vectorbt——`make build` 不會 build
+  掛在 debug profile 的 service。compose 加了共用的 `image:` tag 一併修掉。
+- **服務只綁 `127.0.0.1:8000`**：對外一律走 Cloudflare Tunnel（Step 7）。
+
 ## 第六輪拍板（2026-10-11，寫入方式 + 價格基準）
 
 - **Q19 條件式 upsert**：`_updated_at` 只在值真的改變時更新。寫入從
@@ -295,7 +313,7 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 | 2. `engine.py` 年化改 252 交易日 | ✅ 完成：pipeline PR #12 merge；2026-10-07 重跑 `layer3_backtest_etl`，`backtest_kpis` 已是修正後數字（見下表） | ✅ 已重算（觸發 `layer3_backtest_etl`） |
 | 2.5 系統欄位 `_updated_at` + 條件式 upsert + raw 改未還原價（Q16~20） | PR merge（infra #6、pipeline #14、dashboard #7）；**還沒照 runbook Part 2 套用到地端** | ⚠️ **要**：`backfill_stock_dashboard.py`（`BACKFILL_YEARS=10`）重抓 raw，台積電改未還原價（runbook P2-8） |
 | 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | ✅ 程式完成並在地端 DuckDB 副本驗證（pipeline 分支 `feature/layer3-combo-engine`，待 merge）：22 個可選 trigger 跟 DB 一致；同市場的方案四、五用 `combo_backtest()` 重跑 KPI 完全一致；跨市場進場日都嚴格晚於訊號日；0 次訊號回傳 `num_trades=0`。**發現並修正**（2026-10-11，Benny 拍板要修）：寫死的方案三（美股訊號配台股）原本訊號日當天進場，偷看未來；改成隔一個台股交易日進場，2330.TW 總報酬 1214.6% → 1084.9%、006208.TW 623.7% → 581.3%，跟 `combo_backtest()` 完全一致 | ⚠️ **要重算**：merge 後 `make trigger dag=layer3_backtest_etl`，`backtest_kpis` 跟 `backtest_dashboard.html` 的方案三才會變成修正後的數字（不用重抓資料） |
-| 4. 單一組合 DAG + 觸發服務 | 未開始 | 不用：組合是使用者送出時才算 |
+| 4. 單一組合 DAG + 觸發服務 | ✅ 程式完成並驗證（pipeline 分支 `feature/layer3-combo-dag-service`，待 merge）：DAG `layer3_strategy_combo_backtest`、FastAPI `services/backtest_trigger/`、`combo_def.py`/`combo_store.py`。服務用 TestClient 對地端 DuckDB 副本測過驗證/去重/鎖重試/CORS；DAG 程式在 scheduler image 裡對同一份副本跑過，結果跟寫死策略一致。**還沒在真的 Airflow + 服務上端到端跑過**，merge 後照 runbook Part 3 做 | 不用回補。但 `pyproject.toml` 加了 fastapi/uvicorn，**要 `make build`**；`.env` 要加 `BACKTEST_TRIGGER_API_TOKEN` |
 | 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 | ⚠️ **要**：`backfill_backtest_universe.py` 跑一次——`backtest_universe` 停在 9/6 的回補，每日 fetch 只抓最近幾天補不到中間的缺口，而且要讓整段歷史換成同一個還原基準（Q20）。若 Q15 選做排名快照表：不用回補，排名歷史從第一天重算開始累積 |
 | 6. 前端 `strategy_lab.html` | 未開始 | 不用 |
 | 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） | 不用 |

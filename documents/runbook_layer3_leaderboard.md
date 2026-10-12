@@ -546,3 +546,129 @@ docker run --rm \
 **還原 DB 之後，兩個 repo 的程式也要退回舊版**才能開 Airflow（新 template
 會找不到 `_updated_at` 欄位）：到 GitHub 對兩個 PR 按 **Revert**，merge
 revert PR，再 `git pull`，最後 `make start`。
+
+---
+
+# Part 3：啟用策略組合 DAG + 觸發服務（Step 4，**還沒執行**）
+
+前提：Part 2 做完；pipeline 的 `feature/layer3-combo-dag-service` 已 merge 進
+`master`。這次**不改 schema、不用回補**，但 image 要重 build（加了 fastapi/
+uvicorn），`.env` 要加一組密鑰。
+
+## P3-1：拉程式碼
+
+```bash
+wsl -d Ubuntu-22.04
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+git checkout master && git pull
+ls services/backtest_trigger/app.py
+# 應該印出這個路徑；No such file = 沒拉到
+```
+
+## P3-2：產生密鑰，寫進 `.env`
+
+```bash
+openssl rand -hex 16
+```
+
+把印出來的那串（32 個字元）複製起來。用編輯器打開
+`benny-data-pipeline/.env`，在最後加兩行（第一行貼上你的那串）：
+
+```
+BACKTEST_TRIGGER_API_TOKEN=貼上剛剛那串
+BACKTEST_TRIGGER_ALLOWED_ORIGINS=https://benny0624.github.io
+```
+
+這串就是之後前端要填的 token，自己另外記在安全的地方。`.env` 不會進 git。
+
+## P3-3：重 build image、啟動
+
+```bash
+make down
+make build
+make start
+```
+
+`make build` 第一次要幾分鐘（所有 service 現在共用同一個 image
+`benny-data-pipeline-airflow:latest`）。`make start` 之後：
+
+```bash
+docker ps --format "{{.Names}}	{{.Status}}"
+```
+
+**應該看到**多一個 `benny-data-pipeline-backtest-trigger-1`，狀態
+`Up ... (healthy)`（剛啟動時是 `health: starting`，等 30 秒）。
+
+## P3-4：確認服務活著
+
+```bash
+curl http://localhost:8000/healthz
+# {"status":"ok"}
+
+curl -s http://localhost:8000/api/backtest/options | head -c 300
+# 一串 JSON，開頭是 {"triggers":[{"trigger_type":"YIELD_INVERSION_ENTER","label":"殖利率曲線倒掛",...
+```
+
+## P3-5：確認 DAG 載入、沒暫停
+
+http://localhost:8080 → 找 `layer3_strategy_combo_backtest`：頁面上方沒有紅色
+Broken DAG、左邊開關是**藍色**（這個 DAG 設定成建立時就啟用）。
+
+## P3-6：送出第一個組合（方案四，拿來對答案）
+
+把 `你的token` 換成 P3-2 那串：
+
+```bash
+curl -s -X POST http://localhost:8000/api/backtest/trigger   -H "X-Api-Token: 你的token" -H "Content-Type: application/json"   -d '{"entry_trigger_types":["SPX_GOLDEN_CROSS"],"exit_mode":"TRIGGER","exit_trigger_types":["SPX_DEATH_CROSS"],"ticker":"SPY"}'
+```
+
+**應該看到**：
+
+```json
+{"status":"triggered","strategy_def_id":1,"combo_key":"SPX_GOLDEN_CROSS||TRIGGER|SPX_DEATH_CROSS|||SPY"}
+```
+
+到 Airflow 網頁看 `layer3_strategy_combo_backtest` 多了一個 run，等它變深綠色
+（幾秒～一分鐘）。
+
+常見錯誤：
+
+| 回應 | 原因 |
+|---|---|
+| `401 token 不正確` | token 打錯，或 `.env` 改完沒有 `make down && make start` |
+| `503 服務端沒有設定 BACKTEST_TRIGGER_API_TOKEN` | `.env` 沒加那一行 |
+| `502 組合已記錄，但通知 Airflow 計算失敗` | Airflow webserver 還沒起來，等一分鐘再送一次 |
+| `503 資料庫忙碌中` | 剛好有 DAG 在寫 DuckDB，等一兩分鐘再送 |
+
+## P3-7：對答案
+
+**等 P3-6 的 run 變綠**，然後同一個指令再送一次：
+
+**應該看到** `"status":"exists"`，後面帶 `result`，裡面
+`"total_return_pct":147.3...`、`"sharpe_ratio":0.69...`、`"num_trades":6`
+——跟寫死的方案四（`spx_golden_death_cross`）一樣，代表整條路是對的。
+
+再試一個不合法的，確認會被擋：
+
+```bash
+curl -s -X POST http://localhost:8000/api/backtest/trigger   -H "X-Api-Token: 你的token" -H "Content-Type: application/json"   -d '{"entry_trigger_types":["VIX_PANIC_STATE"],"exit_mode":"FIXED_HOLD","fixed_holding_days":60,"ticker":"SPY"}'
+# {"detail":"進場條件有不在可選清單內的 trigger（STATE 類不能選）：['VIX_PANIC_STATE']"}
+```
+
+做完告訴 Claude「Part 3 跑完了」。這時候還沒有排行榜頁面（Step 6）、排名也還
+不會每天更新（Step 5），但「送出組合 → 算出結果」已經通了。
+
+## Part 3 出事怎麼辦
+
+這次沒有動既有資料，不用還原 DB。服務有問題就看 log：
+
+```bash
+make logs service=backtest-trigger
+```
+
+想把測試送出的組合清掉（`make duckdb-shell`，確認沒有 DAG 在跑）：
+
+```sql
+DELETE FROM stock_dashboard.backtest_strategy_results;
+DELETE FROM stock_dashboard.backtest_strategy_defs;
+```
