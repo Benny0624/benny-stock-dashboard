@@ -73,10 +73,14 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
 | 策略 | 交易標的 | 進場 | 出場 | 狀態 |
 |---|---|---|---|---|
 | `spx_golden_death_cross` | SPY | SPX 金叉 | SPX 死叉 | 已完成 |
-| `sox_spx_ratio_rotation` | 2330.TW、006208.TW（各自獨立結果） | SOX/SPX 創新高 | SOX/SPX 破新低 | 已完成 |
+| `sox_spx_ratio_rotation` | 2330.TW、006208.TW（各自獨立結果） | SOX/SPX 創新高（美股訊號，台股隔一個交易日才進場） | SOX/SPX 破新低（同樣隔一個交易日） | 已完成；2026-10-11 修正偷看未來 |
 | `extreme_fear_dip_buy_60d`/`_120d` | SPY | VIX 極度恐慌 + SOX RSI14<30 | 固定持有 60/120 個交易日 | 已完成 |
 | `sox_macd_rotation` | SOXX | SOX 月線 MACD 黃金交叉 | SOX 月線 MACD 死亡交叉 | 已完成 |
 | 倒掛解開避險 | SPY | 解倒掛 + 倒掛超過100日 + SPX 跌破MA50 | **未定義** | 待補（缺出場規則） |
+
+**跨市場不偷看未來**：訊號市場跟標的市場不同時（美股訊號買台股），進出場日是
+標的市場嚴格晚於訊號日的下一個交易日——美股 T 日收盤（台灣 T+1 凌晨）才有的
+訊號，台股 T 日收盤時還不存在。同市場則是訊號日當天收盤進出場。
 
 基準一律是「回測起點就買、抱到最後」的 buy & hold，跟策略同一天起算，
 公平比較「進出場」vs「全押抱著」。CAGR/Sharpe/Sortino/Calmar 一律用
