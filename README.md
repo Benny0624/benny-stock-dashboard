@@ -73,10 +73,14 @@ VectorBT，結果寫進 `backtest_runs`/`backtest_equity_curve`/
 | 策略 | 交易標的 | 進場 | 出場 | 狀態 |
 |---|---|---|---|---|
 | `spx_golden_death_cross` | SPY | SPX 金叉 | SPX 死叉 | 已完成 |
-| `sox_spx_ratio_rotation` | 2330.TW、006208.TW（各自獨立結果） | SOX/SPX 創新高 | SOX/SPX 破新低 | 已完成 |
+| `sox_spx_ratio_rotation` | 2330.TW、006208.TW（各自獨立結果） | SOX/SPX 創新高（美股訊號，台股隔一個交易日才進場） | SOX/SPX 破新低（同樣隔一個交易日） | 已完成；2026-10-11 修正偷看未來 |
 | `extreme_fear_dip_buy_60d`/`_120d` | SPY | VIX 極度恐慌 + SOX RSI14<30 | 固定持有 60/120 個交易日 | 已完成 |
 | `sox_macd_rotation` | SOXX | SOX 月線 MACD 黃金交叉 | SOX 月線 MACD 死亡交叉 | 已完成 |
 | 倒掛解開避險 | SPY | 解倒掛 + 倒掛超過100日 + SPX 跌破MA50 | **未定義** | 待補（缺出場規則） |
+
+**跨市場不偷看未來**：訊號市場跟標的市場不同時（美股訊號買台股），進出場日是
+標的市場嚴格晚於訊號日的下一個交易日——美股 T 日收盤（台灣 T+1 凌晨）才有的
+訊號，台股 T 日收盤時還不存在。同市場則是訊號日當天收盤進出場。
 
 基準一律是「回測起點就買、抱到最後」的 buy & hold，跟策略同一天起算，
 公平比較「進出場」vs「全押抱著」。CAGR/Sharpe/Sortino/Calmar 一律用
@@ -178,6 +182,59 @@ DDL 的唯一事實來源是 `benny-data-infra/sql/stock_dashboard/init_schema.s
 各表筆數（2026-10-08 地端）：`raw_stock` 27,507、`silver_stock` 105,436、
 `dim_triggers` 23,593、`backtest_universe` 9,886、`backtest_equity_curve`
 14,914，其他都是個位到兩位數；整顆 DuckDB 約 15.5 MB。
+
+## 歷史資料回補（backfill）
+
+**回補程式不在這個 repo**。這個 repo 的 `scripts/` 只放產生 html 的
+`build_*.py`；抓資料、算指標、寫 DuckDB 的程式（含回補）都在
+**`benny-data-pipeline/dags/scripts/`**，因為回補要共用 pipeline 的抓取函式
+（`etl/fetch.py`）、計算 SQL（`templates/`）跟 `bulk_insert()`。之後新增回補
+腳本也放那裡，並更新下面這張表。
+
+### 哪張表用哪支腳本
+
+| 表 | 怎麼回補 / 重算 | 預設範圍 |
+|---|---|---|
+| `raw_stock`、`silver_stock`、`dim_triggers` | `backfill_stock_dashboard.py`（重抓 raw，再重算 silver/trigger） | 2 年；回測要用 `BACKFILL_YEARS=10` |
+| `backtest_universe` | `backfill_backtest_universe.py` | 10 年 |
+| `backtest_runs`/`equity_curve`/`trades`/`kpis` | 不是腳本：觸發 `layer3_backtest_etl` DAG 重算 | 全部歷史 |
+| `backtest_strategy_results` | 不是腳本：每日重算 DAG 重算全部組合（Step 5 之後） | 全部歷史 |
+| `backtest_strategy_defs` | 不用回補（使用者送出的組合定義） | — |
+
+細節（參數、理由）見 `benny-data-pipeline/dags/stock_dashboard_etl/stock_dashboard_etl.md`
+「歷史資料回補」。
+
+### 怎麼跑
+
+```bash
+wsl -d Ubuntu-22.04
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make shell                     # 進 Airflow CLI container
+BACKFILL_YEARS=10 python dags/scripts/backfill_stock_dashboard.py
+python dags/scripts/backfill_backtest_universe.py
+exit
+```
+
+- 跑之前確認**沒有 DAG 正在跑**（Airflow 網頁沒有綠色轉圈的 run），
+  DuckDB 同時只能一個 process 寫。
+- 寫入是條件式 upsert：值沒變的列不會寫，重跑幾次都安全；被改到的列
+  `_updated_at` 會變成當天，可以拿來確認回補實際改了什麼。
+- 回補 `dim_triggers`/`backtest_universe` 之後，回測結果要再觸發
+  `layer3_backtest_etl`（`make trigger dag=layer3_backtest_etl`）才會更新。
+
+### 什麼時候要回補
+
+| 改了什麼 | 要回補嗎 |
+|---|---|
+| 加欄位，值可以從既有欄位算出來（例如 `_updated_at` 補成 `processed_at`） | 不用，寫在 `init_schema.sql` 的 migration 裡 |
+| 加欄位 / 改抓取方式，值要重新跟資料源要（例如 Q20 raw 改未還原價） | **要**，跑對應的 backfill 腳本 |
+| 新增指標（`index_map.py`）或交易標的（`backtest_tickers.py`） | **要**，新的那個沒有歷史 |
+| 改計算公式（MA/RSI/trigger SQL、回測引擎） | 不用重抓，但要**重算**：重跑 backfill（會重算 silver/trigger）或觸發對應 DAG |
+| 新增空表 | 不用 |
+| 電腦/Docker 關了好幾天，每日 DAG 沒跑 | 視缺口長度：每日 fetch 只抓最近 5 天，超過 5 天的缺口要跑 backfill |
+
+策略組合排行榜各開發步驟需不需要回補，標在 `documents/grilling_notes.md`
+「實作進度」表的最後一欄。
 
 ## 架構
 
