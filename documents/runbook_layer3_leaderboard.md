@@ -335,7 +335,7 @@ make start
 
 ---
 
-# Part 2：加系統欄位 `_updated_at`（2026-10-07 起，**還沒執行**）
+# Part 2：加系統欄位 `_updated_at`（2026-10-12 已執行完成）
 
 設計見 `grilling_notes.md`「第五輪拍板」Q16~18、「第六輪拍板」Q19~20。
 這次跟 Part 1 不一樣：**會改到既有的表**（9 張表各加一欄 `_updated_at`、
@@ -549,7 +549,7 @@ revert PR，再 `git pull`，最後 `make start`。
 
 ---
 
-# Part 3：啟用策略組合 DAG + 觸發服務（Step 4，**還沒執行**）
+# Part 3：啟用策略組合 DAG + 觸發服務（Step 4，2026-10-14 已執行完成）
 
 前提：Part 2 做完；pipeline 的 `feature/layer3-combo-dag-service` 已 merge 進
 `master`。這次**不改 schema、不用回補**，但 image 要重 build（加了 fastapi/
