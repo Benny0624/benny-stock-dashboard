@@ -29,6 +29,37 @@
   更新就跑，一天最多兩次，DAG 設 `max_active_runs=1` 避免重疊。不用 AND：
   一邊休市沒發 Dataset 事件，另一邊的新資料會延遲上榜。
 
+## 第七輪拍板（2026-10-14，回測頁跟排行榜統一）
+
+- **Q21 寫死策略併進組合系統（選 c）**：現在同一個策略有兩條路——寫死的
+  6 個策略走 `layer3_backtest_etl` → `backtest_kpis` 等 4 張表 →
+  `backtest_dashboard.html`；使用者組合走觸發服務 →
+  `layer3_strategy_combo_backtest` → `backtest_strategy_results` → 排行榜。
+  兩邊各算各存，改一邊忘了改另一邊就會對不上（方案三偷看未來就是這樣：寫死
+  版有、組合引擎沒有）。拍板做法：
+  - 寫死策略改成排行榜裡的**預設組合**（開發時先寫進
+    `backtest_strategy_defs`），跟使用者組合同一張表、同一個引擎、一起排名。
+    **使用者自創組合完全不受影響**，照樣能從可選 trigger 任意組合。
+  - 回測頁變成「任何組合」的詳細頁：從排行榜點進去看 Equity Curve、
+    Underwater、逐筆交易——使用者的組合也能看細節（現在只有寫死策略有）。
+  - 組合要開始存淨值曲線跟逐筆交易（每個組合約 2,500 列，幾百個組合可接受）。
+  - 方案一的「同一天 SOX RSI14 < 30」不是 trigger，要先在
+    `compute_triggers.sql` 加一個（例如 SOX RSI14 跌破 30），加了之後使用者也
+    能選。
+  - 完成後 `layer3_backtest_etl` 跟 `backtest_runs`/`equity_curve`/`trades`/
+    `kpis` 4 張表退役。
+  - **時程**：排在 Step 6（排行榜頁面）之後，當 Step 6.5——詳細頁要掛在排行榜
+    下面，排行榜要先存在。在那之前，`validate_combo_backtest.py` 的比對放進
+    Step 5 每日重算 DAG 的最後一步，兩邊算出來不一樣 DAG 就失敗（Airflow 上
+    紅色），不靠人記得手動跑。
+- **為什麼改了程式還要重跑 `layer3_backtest_etl`**（補記，2026-10-14 Benny
+  問）：網頁只讀資料表裡存好的數字，不會自己算；`layer3_backtest_etl` 是
+  `schedule_interval=None`，永遠不會自己跑。所以改了計算邏輯（例如方案三改成
+  隔一個交易日進場）之後，要手動觸發一次，用新程式重算、覆寫
+  `backtest_kpis`、重新 push 網頁。觸發服務的 `curl` 寫的是另一張表
+  （`backtest_strategy_results`），不會更新回測頁。Q21 完成後只剩一條路，這個
+  問題就消失了。
+
 ## Step 4 實作時跟規格不同的地方（2026-10-13）
 
 - **檔案位置**：組合的檢查/正規化/`combo_key()` 放在
@@ -316,6 +347,7 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 | 4. 單一組合 DAG + 觸發服務 | ✅ 完成：pipeline PR #16 merge；2026-10-14 照 runbook Part 3 在地端端到端跑通——4 個 container 共用 `benny-data-pipeline-airflow:latest`、`backtest-trigger` healthy、送出方案四組合算出 147.3% / Sharpe 0.69 / 6 筆交易（跟寫死策略一致）、`airflow-cli` image 已有 vectorbt | 不用回補（已 `make build`、`.env` 已加 token） |
 | 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 | ⚠️ **要**：`backfill_backtest_universe.py` 跑一次——`backtest_universe` 停在 9/6 的回補，每日 fetch 只抓最近幾天補不到中間的缺口，而且要讓整段歷史換成同一個還原基準（Q20）。若 Q15 選做排名快照表：不用回補，排名歷史從第一天重算開始累積 |
 | 6. 前端 `strategy_lab.html` | 未開始 | 不用 |
+| 6.5 寫死策略併進組合系統、回測頁改成組合詳細頁（Q21） | 未開始 | ⚠️ **要**：預設組合跟所有既有組合都要重算一次，寫入新的淨值曲線/逐筆交易表；新加的 SOX RSI trigger 要靠 `backfill_stock_dashboard.py`（`BACKFILL_YEARS=10`）重算出歷史 |
 | 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） | 不用 |
 
 **修正後的 6 個寫死策略 KPI**（2026-10-07，252 交易日年化）：

@@ -414,6 +414,14 @@ curl https://api.你的網域.com/api/backtest/trigger -X POST \
    `outlets`，確認 `backtest_universe` 每天有新價格、任一邊跑完都會觸發
    重算、push 一次。
 6. 排行榜前端頁面（第 7 節）串接本機服務測試。
-7. 最後才做 Cloudflare Tunnel + 網域（第 5 節）——這步是「讓外部連得到」，
-   跟前面 1-6 步「功能本身對不對」是獨立的兩件事，先確保功能正確，最後
+7. **（Q21，排在 6 之後，記為 6.5）寫死策略併進組合系統**：寫死的 6 個策略
+   改成 `backtest_strategy_defs` 裡的預設組合（方案一要先在
+   `compute_triggers.sql` 加 SOX RSI14 跌破 30 的 trigger）；組合新增淨值曲線、
+   逐筆交易兩張表（用 `strategy_def_id` 當 key，仿 `backtest_equity_curve`/
+   `backtest_trades`）；`backtest_dashboard.html` 改成從排行榜點進去的組合
+   詳細頁；最後 `layer3_backtest_etl` 跟 `backtest_runs`/`equity_curve`/
+   `trades`/`kpis` 退役。在這之前，Step 5 的每日重算 DAG 最後一步跑
+   `validate_combo_backtest.py` 的比對，寫死策略跟組合引擎算出來不一樣就失敗。
+8. 最後才做 Cloudflare Tunnel + 網域（第 5 節）——這步是「讓外部連得到」，
+   跟前面 1-7 步「功能本身對不對」是獨立的兩件事，先確保功能正確，最後
    再處理對外曝露，避免除錯時把「網路連不通」跟「邏輯寫錯」混在一起。
