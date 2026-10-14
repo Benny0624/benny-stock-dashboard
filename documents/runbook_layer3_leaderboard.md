@@ -672,3 +672,105 @@ make logs service=backtest-trigger
 DELETE FROM stock_dashboard.backtest_strategy_results;
 DELETE FROM stock_dashboard.backtest_strategy_defs;
 ```
+
+---
+
+# Part 4：啟用排行榜每日重算（Step 5，**還沒執行**）
+
+這次有一張**新表**（名次快照）、每日市場 DAG 多兩個 task、多一個新 DAG。不用
+手動回補：交易標的價格會由每日 DAG 自己整段重抓。
+
+## P4-0：兩個 PR 都 merge
+
+| repo | 分支 | 合進 |
+|---|---|---|
+| `benny-data-infra` | `feature/rank-history` | `master` |
+| `benny-data-pipeline` | `feature/layer3-leaderboard-daily` | `master` |
+
+## P4-1：拉程式碼、確認
+
+```bash
+wsl -d Ubuntu-22.04
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-infra
+git checkout master && git pull
+grep -c "backtest_strategy_rank_history" sql/stock_dashboard/init_schema.sql
+# 應該印出 4（或任何 > 0）
+
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+git checkout master && git pull
+ls dags/stock_dashboard_etl/layer3_strategy_leaderboard_daily.py dags/.airflowignore
+# 兩個路徑都印出來 = 拉到了
+```
+
+## P4-2：停 Airflow、建新表
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make down
+
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-infra
+make start
+# [OK] Schema initialized at /data/warehouse.duckdb
+```
+
+這次 `pyproject.toml` 沒改，**不用** `make build`。
+
+## P4-3：開 Airflow，確認 DAG
+
+```bash
+cd /mnt/c/Users/BennyXu/Benny_Repo/Repositories/benny-data-pipeline
+make start
+```
+
+http://localhost:8080：
+
+- 頁面上方**沒有**紅色 Broken DAG。
+- 多一個 `layer3_strategy_leaderboard_daily`，開關是**藍色**，Schedule 欄顯示
+  Dataset（不是時間）。
+- 點進 `us_market_daily_etl` → Graph，多了 `fetch_backtest_universe_us` 跟
+  `market_ready_us` 兩格。
+
+## P4-4：手動跑一次美股每日 DAG
+
+```bash
+make trigger dag=us_market_daily_etl
+```
+
+等它全部變綠（含新的兩格）。`market_ready_us` 一綠，
+`layer3_strategy_leaderboard_daily` 應該**自己**多一個 run（不用手動觸發），
+等它的 4 格也變綠。
+
+`report_failed_combos` 紅色 = 有組合算失敗，點進 Logs 看是哪個組合；
+`compare_hardcoded_with_combos` 紅色 = 寫死策略跟組合引擎算出來不一樣，把 Logs
+貼給 Claude。
+
+## P4-5：確認結果
+
+**等上面全部綠**再開：
+
+```bash
+make duckdb-shell
+```
+
+```sql
+-- 交易標的價格補到最近的交易日
+SELECT ticker, max(updated_at) FROM stock_dashboard.backtest_universe GROUP BY 1 ORDER BY 1;
+
+-- 今天的名次快照
+SELECT h.rank, d.combo_key, round(h.sharpe_ratio, 2) AS sharpe
+FROM stock_dashboard.backtest_strategy_rank_history h
+JOIN stock_dashboard.backtest_strategy_defs d USING (strategy_def_id)
+WHERE h.snapshot_date = (SELECT max(snapshot_date) FROM stock_dashboard.backtest_strategy_rank_history)
+ORDER BY h.rank;
+```
+
+**應該看到**：美股兩檔（SPY、SOXX）的 `max(updated_at)` 是最近一個美股交易日；
+台股兩檔要等 `tw_market_daily_etl` 跑過才會更新（可以 `make trigger
+dag=tw_market_daily_etl` 一起驗）。名次表有你之前送出的組合，`rank` 從 1 開始。
+
+離開：`.exit`。做完告訴 Claude「Part 4 跑完了」。
+
+## Part 4 出事怎麼辦
+
+新表是空的、不影響既有資料。每日 DAG 新加的兩格失敗，只會讓排行榜不重算，
+`update_dashboard` 照常 push 指標 dashboard。看 Logs 貼給 Claude 即可。

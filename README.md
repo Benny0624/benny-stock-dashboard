@@ -171,13 +171,14 @@ DDL 的唯一事實來源是 `benny-data-infra/sql/stock_dashboard/init_schema.s
 | `raw_stock` | Layer 1 | 一個指標一天的原始值 | `market, index_id, updated_at` | `index_name`、`index_value`（收盤價 / 殖利率 / VIX，未還原） | 每日 DAG `fetch_raw` 抓最近 5 天；`backfill_stock_dashboard.py` | `build_dashboard.py`；silver 計算 |
 | `silver_stock` | Layer 2 | 一個指標一天的一種衍生值 | `market, index_id, agg_type, updated_at` | `agg_type`（`RAW` 合成比值 / `MA50` / `MA200` / `RSI14`）、`agg_value` | 每日 DAG 3 個 SQL template（每次整段重算，值沒變的列不寫） | `build_dashboard.py`；trigger 計算 |
 | `dim_triggers` | Layer 2 | 一個訊號一天的事件 / 狀態 | `market, index_id, trigger_type, updated_at` | `trigger_type`（`*_STATE` 每天一筆；`*_ENTER`/`*_EXIT`/金叉死叉等只在發生當天）、`trigger_value` | 每日 DAG `compute_triggers.sql` + SOX 月線 MACD task | `build_dashboard.py`、`build_backtest_dashboard.py`；回測引擎 |
-| `backtest_universe` | Layer 3 | 一檔交易標的一天的收盤價 | `ticker, updated_at` | `ticker_name`、`market`、`close_price`（還原權值價） | `backfill_backtest_universe.py`（一次性）；開發中：每日 `fetch_backtest_universe` | 回測引擎、`build_backtest_dashboard.py` |
+| `backtest_universe` | Layer 3 | 一檔交易標的一天的收盤價 | `ticker, updated_at` | `ticker_name`、`market`、`close_price`（還原權值價） | 每日 `fetch_backtest_universe_{market}`（整段重抓，Step 5）；`backfill_backtest_universe.py`（一次性） | 回測引擎、`build_backtest_dashboard.py` |
 | `backtest_runs` | Layer 3 | 一個寫死策略 × 標的的回測 metadata | `strategy_name, ticker` | `benchmark_ticker`、`start_date`、`end_date` | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
 | `backtest_equity_curve` | Layer 3 | 寫死策略 × 標的一天的淨值 | `strategy_name, ticker, updated_at` | `strategy_value`、`benchmark_value`、`drawdown_pct` | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
 | `backtest_trades` | Layer 3 | 寫死策略 × 標的的一筆交易 | `strategy_name, ticker, trade_seq` | 進出場日期 / 價格、`return_pct`、`holding_days` | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
 | `backtest_kpis` | Layer 3 | 寫死策略 × 標的的彙總 KPI | `strategy_name, ticker` | 總報酬、CAGR、Sharpe、Sortino、最大回撤、勝率、交易次數、Alpha/Beta…（年化用 252 交易日） | `layer3_backtest_etl` | `build_backtest_dashboard.py` |
 | `backtest_strategy_defs` | Layer 3 排行榜 | 一個使用者自組的策略組合 | `strategy_def_id`（sequence）；`combo_key` 也是 unique | 進場 / 出場 `trigger_type` 陣列、AND/OR、出場模式、固定持有天數、`ticker`、`created_at` | 開發中：觸發服務（`INSERT OR IGNORE`，寫入後不改，沒有 `processed_at`/`_updated_at`） | 開發中：組合 DAG、排行榜 |
 | `backtest_strategy_results` | Layer 3 排行榜 | 一個策略組合的 KPI | `strategy_def_id` | 欄位同 `backtest_kpis` | 開發中：單一組合 DAG、每日重算 DAG | 開發中：`strategy_lab.html` |
+| `backtest_strategy_rank_history` | Layer 3 排行榜 | 一個組合某一天的名次 | `snapshot_date, strategy_def_id` | `rank`（依 Sharpe）、`sharpe_ratio` | 每日重算 DAG（台灣日期一天一份） | 開發中：`strategy_lab.html` 顯示 ↑↓/NEW |
 
 各表筆數（2026-10-08 地端）：`raw_stock` 27,507、`silver_stock` 105,436、
 `dim_triggers` 23,593、`backtest_universe` 9,886、`backtest_equity_curve`
@@ -196,7 +197,7 @@ DDL 的唯一事實來源是 `benny-data-infra/sql/stock_dashboard/init_schema.s
 | 表 | 怎麼回補 / 重算 | 預設範圍 |
 |---|---|---|
 | `raw_stock`、`silver_stock`、`dim_triggers` | `backfill_stock_dashboard.py`（重抓 raw，再重算 silver/trigger） | 2 年；回測要用 `BACKFILL_YEARS=10` |
-| `backtest_universe` | `backfill_backtest_universe.py` | 10 年 |
+| `backtest_universe` | 通常不用手動：每日 DAG 的 `fetch_backtest_universe_{market}` 每天整段重抓（Step 5 之後）。全新環境第一次建置才跑 `backfill_backtest_universe.py` | 10 年 |
 | `backtest_runs`/`equity_curve`/`trades`/`kpis` | 不是腳本：觸發 `layer3_backtest_etl` DAG 重算 | 全部歷史 |
 | `backtest_strategy_results` | 不是腳本：每日重算 DAG 重算全部組合（Step 5 之後） | 全部歷史 |
 | `backtest_strategy_defs` | 不用回補（使用者送出的組合定義） | — |

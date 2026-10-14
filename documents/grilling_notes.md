@@ -52,6 +52,12 @@
     下面，排行榜要先存在。在那之前，`validate_combo_backtest.py` 的比對放進
     Step 5 每日重算 DAG 的最後一步，兩邊算出來不一樣 DAG 就失敗（Airflow 上
     紅色），不靠人記得手動跑。
+- **Q15 排行榜顯示排名變化（選 b）**：新增 `backtest_strategy_rank_history`
+  （`snapshot_date`, `strategy_def_id`, `rank`, `sharpe_ratio`），每日重算 DAG
+  寫入當天名次（台灣日期，一天一份，同一天後跑的覆寫）；前端拿最新一天跟前一個
+  `snapshot_date` 比，顯示 ↑↓ / NEW。`backtest_strategy_results` 不加 `rank`
+  欄位（可以現算、存了會過期、只對應一種排序）。名次依 Sharpe 高到低、NULL
+  最後、同分看 CAGR。不用回補，排名歷史從第一次每日重算開始累積。
 - **為什麼改了程式還要重跑 `layer3_backtest_etl`**（補記，2026-10-14 Benny
   問）：網頁只讀資料表裡存好的數字，不會自己算；`layer3_backtest_etl` 是
   `schedule_interval=None`，永遠不會自己跑。所以改了計算邏輯（例如方案三改成
@@ -59,6 +65,30 @@
   `backtest_kpis`、重新 push 網頁。觸發服務的 `curl` 寫的是另一張表
   （`backtest_strategy_results`），不會更新回測頁。Q21 完成後只剩一條路，這個
   問題就消失了。
+
+## Step 5 實作時跟規格不同的地方（2026-10-14）
+
+- **交易標的價格每天整段重抓，不偵測除息**：proposal 原本寫「抓最近窗口，
+  遇到除息才整段重抓」。改成每天都從表裡最早的日期抓到今天——除息偵測要多一段
+  判斷，而且電腦關機好幾天時，除息可能落在窗口外被漏掉；整段重抓一個市場只有
+  2 檔、各打一次 API，值沒變的列條件式 upsert 不寫，成本很低又不會漏。實測第一次
+  跑：9/4 之後的缺口補齊，而且因為期間有除息，SPY/SOXX/2330.TW 幾乎每一列的
+  還原價都被改寫——證實 Q20 的擔心是真的。
+- **起點不是「今天往前 10 年」**：起點每天往後移，最早那一段舊資料就永遠不會
+  再被重抓、還原基準不一致，所以起點取「表裡最早的日期」跟 10 年前較早的那個。
+- **Dataset 名稱**：`duckdb://stock_dashboard/market_ready/{us,tw}`，由新加的
+  `market_ready_{market}`（EmptyOperator）發，上游是 `compute_triggers`、
+  `compute_sox_macd`、`fetch_backtest_universe`；不接在 `update_dashboard`
+  後面，dashboard push 失敗不擋排行榜重算。
+- **排行榜 html 還沒 push**：push 排行榜要 Step 6 的頁面跟產生腳本，所以 Step 5
+  的 DAG 只有重算、名次快照、寫死策略比對、回報失敗組合四個 task。
+- **新增 `dags/.airflowignore`**：Airflow 會把內文同時有 "airflow" 跟 "dag" 的
+  .py 當 DAG 掃，新的 `combo_job.py` 因此被誤判成 Broken DAG。排除
+  `stock_dashboard_etl/` 底下的 `backtest/`、`constants/`、`etl/`、`templates/`。
+- **開發改用 git worktree**：地端 Airflow 直接 bind mount pipeline 資料夾的
+  `dags/`，在主資料夾切到開發分支，還沒測完的 DAG 就會被正在跑的 scheduler 載入
+  （這個 DAG 又設成建立時就啟用、Dataset 一來就跑）。Step 5 起開發分支放在
+  `../benny-data-pipeline-step5`，主資料夾維持 `master`。
 
 ## Step 4 實作時跟規格不同的地方（2026-10-13）
 
@@ -345,7 +375,7 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 | 2.5 系統欄位 `_updated_at` + 條件式 upsert + raw 改未還原價（Q16~20） | PR merge（infra #6、pipeline #14、dashboard #7）；2026-10-12 已照 runbook Part 2 套用到地端 | ✅ 已回補：`backfill_stock_dashboard.py`（`BACKFILL_YEARS=10`）重抓 raw，台積電改未還原價（runbook P2-8） |
 | 3. `combo_triggers.py` + `combo_backtest()` + 反向驗證 | ✅ 程式完成並在地端 DuckDB 副本驗證（pipeline PR #15 merge）：22 個可選 trigger 跟 DB 一致；同市場的方案四、五用 `combo_backtest()` 重跑 KPI 完全一致；跨市場進場日都嚴格晚於訊號日；0 次訊號回傳 `num_trades=0`。**發現並修正**（2026-10-11，Benny 拍板要修）：寫死的方案三（美股訊號配台股）原本訊號日當天進場，偷看未來；改成隔一個台股交易日進場，2330.TW 總報酬 1214.6% → 1084.9%、006208.TW 623.7% → 581.3%，跟 `combo_backtest()` 完全一致 | ⚠️ **要重算，還沒做**（2026-10-14 查 `backtest_kpis` 方案三仍是 1214.6% / 623.7%）： `make trigger dag=layer3_backtest_etl`，`backtest_kpis` 跟 `backtest_dashboard.html` 的方案三才會變成修正後的數字（不用重抓資料） |
 | 4. 單一組合 DAG + 觸發服務 | ✅ 完成：pipeline PR #16 merge；2026-10-14 照 runbook Part 3 在地端端到端跑通——4 個 container 共用 `benny-data-pipeline-airflow:latest`、`backtest-trigger` healthy、送出方案四組合算出 147.3% / Sharpe 0.69 / 6 筆交易（跟寫死策略一致）、`airflow-cli` image 已有 vectorbt | 不用回補（已 `make build`、`.env` 已加 token） |
-| 5. 每日重算 DAG + `fetch_backtest_universe` | 未開始 | ⚠️ **要**：`backfill_backtest_universe.py` 跑一次——`backtest_universe` 停在 9/6 的回補，每日 fetch 只抓最近幾天補不到中間的缺口，而且要讓整段歷史換成同一個還原基準（Q20）。若 Q15 選做排名快照表：不用回補，排名歷史從第一天重算開始累積 |
+| 5. 每日重算 DAG + `fetch_backtest_universe` + 名次快照（Q15） | ✅ 程式完成並在 Airflow image 裡對地端 DuckDB 副本驗證（pipeline 分支 `feature/layer3-leaderboard-daily`、infra 分支 `feature/rank-history`，待 merge）：DAG 載入無錯誤、Dataset 接線正確；交易標的價格補到 10/14、整段歷史換成同一個還原基準；組合重算、名次快照、寫死策略比對都通過。排行榜 html push 等 Step 6 | 不用另外跑 backfill：`fetch_backtest_universe` 每天整段重抓，第一次跑就會補齊 9/4 之後的缺口。要套 schema（infra `make start` 建名次快照表），照 runbook Part 4 |
 | 6. 前端 `strategy_lab.html` | 未開始 | 不用 |
 | 6.5 寫死策略併進組合系統、回測頁改成組合詳細頁（Q21） | 未開始 | ⚠️ **要**：預設組合跟所有既有組合都要重算一次，寫入新的淨值曲線/逐筆交易表；新加的 SOX RSI trigger 要靠 `backfill_stock_dashboard.py`（`BACKFILL_YEARS=10`）重算出歷史 |
 | 7. Cloudflare Tunnel + 網域 | 未開始（Benny 手動） | 不用 |
@@ -365,11 +395,7 @@ dags/scripts/backfill_stock_dashboard.py`，只灌 raw/silver 兩張表）。
 `processed_at` 仍是 9/4、9/6——這是對的，`processed_at` 定義就是第一次
 寫入時間。最後更新時間另開系統欄位 `_updated_at` 記錄（2.5 步）。
 
-**Q15 待回答**（不擋 Step 3，Step 5 前要定）：排行榜要不要顯示排名變化
-（↑↓/NEW）。(a) 不要，排名產 html 時用 `RANK()` 現算 (b) 要，新增快照表
-`backtest_strategy_rank_history`，每日重算 DAG 寫入當天名次。
-➡️ 建議 (b)。兩案都不在 `backtest_strategy_results` 加 `rank` 欄位（可以
-現算、存了會過期、只對應一種排序）。
+**Q15 已拍板（2026-10-14，選 b）**：見「第七輪拍板」。
 
 Benny 手動待辦：買網域 + Cloudflare Tunnel、產生
 `BACKTEST_TRIGGER_API_TOKEN` 放 `benny-data-pipeline/.env`、手機肉眼確認
